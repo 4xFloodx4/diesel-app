@@ -25,6 +25,22 @@ html, body { height: 100%; }
 .bombas button[aria-pressed="true"] { background: var(--diesel); border-color: var(--diesel); color: #fff; }
 .bombas button[aria-pressed="true"] small { color: #fff; opacity: .85; }
 
+/* Atualização do app: faixa abaixo do topo enquanto baixa ou espera; tela cheia na hora de aplicar */
+.atualizacao { padding: 8px 16px; font: 500 13px var(--f-texto); background: var(--pend-fundo); color: var(--pend); border-bottom: 1px solid var(--risco); }
+.atualizacao.pronta { background: var(--ok-fundo); color: var(--ok); }
+.atualizando { position: fixed; inset: 0; z-index: 50; background: var(--chao); display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 10px; padding: 24px; text-align: center; }
+.atualizando h1 { font: 700 22px var(--f-titulo); }
+.atualizando .barra-ind { width: 180px; height: 6px; border-radius: 3px; background: var(--risco); overflow: hidden; }
+.atualizando .barra-ind i { display: block; width: 40%; height: 100%; border-radius: 3px; background: var(--diesel); }
+.gira { width: 38px; height: 38px; border-radius: 50%; border: 3px solid var(--risco); border-top-color: var(--diesel); }
+@media (prefers-reduced-motion: no-preference) {
+  .gira { animation: gira .9s linear infinite; }
+  .atualizando .barra-ind i { animation: vai 1.2s ease-in-out infinite; }
+  @keyframes gira { to { transform: rotate(360deg); } }
+  @keyframes vai { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
+}
+
 /* Busca de placa e motorista: sugestões que o frentista toca */
 .busca { text-transform: uppercase; }
 .busca::placeholder { text-transform: none; }

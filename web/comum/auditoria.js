@@ -97,6 +97,10 @@ export function descrever(e, ctx = {}) {
       frase = `fechou o turno de <b>${esc(valorSimples(e.entidade_id + 'T00:00').slice(0, 5))}</b>${med ? `: ${med}` : ''}${d.fotos ? ` (${esc(d.fotos)} foto(s) da régua)` : ''}.`;
       break;
     }
+    case 'turno.reaberto':
+      tipo = 'decisao';
+      frase = `reabriu o turno de <b>${esc(valorSimples(e.entidade_id + 'T00:00').slice(0, 5))}</b>, que tinha sido fechado: “${esc(d.motivo)}”.`;
+      break;
     case 'lote.gerado': tipo = 'lote'; frase = `gerou o <b>lote ${id}</b> do KMM (${esc(d.quantidade)} abastecimentos, ${esc(valorSimples(d.litros))} L).`; break;
     case 'lote.confirmar': tipo = 'lote'; frase = `confirmou que o <b>lote ${id}</b> foi importado no KMM (${esc(d.registros)} abastecimentos).`; break;
     case 'lote.desfazer': tipo = 'lote'; frase = `desfez o <b>lote ${id}</b>: ${esc(d.registros)} abastecimentos voltaram para o próximo lote.`; break;

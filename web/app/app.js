@@ -4,7 +4,7 @@
 import { rpc, supabase, contaAtual, entrarComGoogle, aoVoltarDoLogin, sair } from '../comum/supa.js';
 import { esc, nf, parseNum, hhmm, hojeISO, horaAgora, classeStatus, ler, gravar } from '../comum/util.js';
 import { tirarFoto, enviarFotos } from '../comum/fotos.js';
-import { prepararAtualizacao, confirmarAbertura } from '../comum/atualizacao.js';
+import { vigiarAtualizacoes, situacaoAtualizacao, novidadeAplicada, confirmarAbertura } from '../comum/atualizacao.js';
 import { aplicarTema, htmlTema, definirTema, protegerContraMoldura } from '../comum/tema.js';
 import { htmlGuia, htmlAbasGuia } from '../comum/guia.js';
 
@@ -117,7 +117,8 @@ const diasDesde = iso => Math.floor((Date.now() - new Date(iso).getTime()) / 864
 const situacaoAfericao = b => !b.ultima_afericao ? 'nunca feita' : b.afericao_vencida ? 'vencida'
   : diasDesde(b.ultima_afericao) === 0 ? 'feita hoje' : `há ${diasDesde(b.ultima_afericao)} dia(s)`;
 const diaFechado = () => `<div class="aviso-grande"><b>O turno de hoje já foi fechado.</b>
-  <p>Depois do fechamento, nada mais entra com a data de hoje. Se faltou algum lançamento, fale com o supervisor.</p></div>`;
+  <p>Depois do fechamento, nada mais entra com a data de hoje. Fechou sem querer ou faltou algum lançamento? Peça ao supervisor para reabrir o turno no painel.</p></div>
+  <button class="btn ghost" type="button" data-acao="atualizar">O supervisor já reabriu? Atualizar</button>`;
 const novaChegada = () => ({ tanque: estado?.tanques?.[0]?.tanque ?? '', hora: horaAgora(), nf: '', litros: '', valor: '', antes: '', depois: '',
   placa: '', carreta: '', motorista: '', cpf: '' });
 
@@ -567,6 +568,27 @@ function telaAjuda() {
     <p class="hint">Conta do celular: ${esc(conta)}</p>`;
 }
 
+// ---------- Atualização do app ----------
+// Só entra quando ninguém está no meio de algo: recarregar a tela apagaria o que foi digitado
+const chegadaPreenchida = () => !!chegada && ['nf', 'litros', 'valor', 'antes', 'depois', 'placa', 'carreta', 'motorista', 'cpf'].some(k => String(chegada[k] || '').trim());
+const appLivre = () => !enviando && !tela && !boasVindas && !pin && !editPreco && !confirmaLimpar && !sugestaoPreco
+  && !(login && form && temAlgoPreenchido()) && !chegadaPreenchida() && !afericao.visor.trim() && afericao.bomba == null
+  && !fotosChegada.length && !fotosAfericao.length && !fotosFechamento.length && !Object.values(medidos).some(v => String(v ?? '').trim())
+  && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+// Faixa logo abaixo do topo enquanto baixa ou espera; tela cheia na hora de aplicar
+const faixaAtualizacao = document.createElement('div');
+document.querySelector('.topo').after(faixaAtualizacao);
+let htmlAtualizacao = '';
+function desenharAtualizacao() {
+  const { fase, pct } = situacaoAtualizacao();
+  const html = fase === 'aplicando' ? `<div class="atualizando" role="alert"><span class="gira" aria-hidden="true"></span><h1>Atualizando o app…</h1>
+      <p class="hint">Não feche, é rapidinho.</p><span class="barra-ind" aria-hidden="true"><i></i></span></div>`
+    : fase === 'baixando' ? `<div class="atualizacao" role="status">Baixando atualização do app…${pct ? ` ${pct}%` : ''}</div>`
+    : fase === 'pronta' ? '<div class="atualizacao pronta" role="status">✓ Atualização pronta. Entra assim que você enviar ou limpar o que está preenchendo.</div>'
+    : '';
+  if (html !== htmlAtualizacao) { faixaAtualizacao.innerHTML = htmlAtualizacao = html; }
+}
+
 // Transição entre telas: só quando a tela muda (digitar não repete a animação). Avançar desliza da direita,
 // voltar da esquerda; trocar de aba só esmaece.
 const NIVEL_TELA = ['google', 'semacesso', 'carregando', 'semrede', 'nomes', 'pin', 'ola'];
@@ -605,6 +627,7 @@ function render(manterFoco) {
   animarTroca(chave);
   document.querySelectorAll('#abas button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === aba)));
   if (foco) { const el = $(foco); if (el) { el.focus(); try { if (pos != null) el.setSelectionRange(pos, pos); } catch { /* campo sem seleção */ } } }
+  desenharAtualizacao();
 }
 
 // ---------- Eventos ----------
@@ -870,7 +893,17 @@ async function carregar() {
   form = estado ? novoForm() : null;
   chegada = estado ? novaChegada() : null;
   render();
-  if (!atualizacaoVista) { atualizacaoVista = true; prepararAtualizacao(); }
+  if (!atualizacaoVista) {
+    atualizacaoVista = true;
+    // Acabou de atualizar: conta o que mudou (a mensagem some sozinha)
+    const novo = await novidadeAplicada();
+    if (novo) {
+      const msg = { tipo: 'ok', texto: novo.notas ? `App atualizado. Novidade: ${novo.notas}` : 'App atualizado.' };
+      aviso = msg; render();
+      setTimeout(() => { if (aviso === msg) { aviso = null; render(); } }, 9000);
+    }
+    vigiarAtualizacoes({ livre: appLivre, mudou: () => desenharAtualizacao() });
+  }
 }
 let atualizacaoVista = false;
 

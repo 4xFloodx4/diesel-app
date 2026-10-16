@@ -143,7 +143,9 @@ Espaço: com cerca de 25 abastecimentos por dia, dá uns 250 MB por mês. Os 15 
 
 ## Atualizar o app depois de instalado
 
-O app se atualiza sozinho. Cada mudança enviada ao GitHub publica um pacote novo das telas junto com o painel. Ao abrir, o app confere, baixa em segundo plano e, **na próxima abertura**, já está com a versão nova. Se a versão nova não conseguir abrir, ele volta sozinho para a anterior.
+O app se atualiza sozinho. Cada mudança enviada ao GitHub publica um pacote novo das telas junto com o painel. O app confere ao abrir, a cada 5 minutos e quando o celular volta para ele. Achou versão nova, baixa (aparece uma faixa "Baixando atualização" no alto) e, assim que o frentista não estiver no meio de um lançamento, mostra **Atualizando o app…** e reabre já na versão nova, com uma frase do que mudou: o título do commit. Se o app fechar antes, a versão nova entra na próxima abertura. Se ela não conseguir abrir, o app volta sozinho para a anterior.
+
+O título do commit aparece para o frentista: escreva em português simples, como "Foto do comprovante obrigatória em todo abastecimento".
 
 Só é preciso instalar um APK novo quando mudar algo da "casca" do app: ícone, nome, permissões ou componentes do Android. Nesse caso, crie uma release nova (`v1.2.0`, …) e instale por cima.
 
@@ -153,4 +155,4 @@ Quando o `supabase/schema.sql` mudar, rode o arquivo inteiro de novo no SQL Edit
 
 Rode **antes** de publicar telas novas que dependam dele (por exemplo, o horário do turno): as telas novas chamam colunas e funções que só existem depois.
 
-Quando o banco passa a exigir algo novo do app (como a foto do comprovante), a versão antiga do app no celular deixa de conseguir lançar até se atualizar. Faça a troca num horário calmo: rode o SQL, publique, e no celular feche e abra o app duas vezes (a primeira baixa a versão nova, a segunda já abre com ela).
+Quando o banco passa a exigir algo novo do app (como a foto do comprovante), a versão antiga do app no celular deixa de conseguir lançar até se atualizar. Faça a troca num horário calmo: rode o SQL e publique. Em poucos minutos o app se atualiza sozinho; para não esperar, feche e abra o app.

@@ -1251,6 +1251,27 @@ begin
   return jsonb_build_object('id', p_lote, 'situacao', case p_acao when 'confirmar' then 'Confirmado' else 'Desfeito' end, 'registros', v_n);
 end $$;
 
+-- Turno fechado sem querer: supervisor ou administrador reabre (só o último fechado, para não bagunçar o saldo dos
+-- dias seguintes). Apaga o fechamento daquele dia; o frentista volta a lançar e fecha de novo. As medidas apagadas e o
+-- motivo ficam na auditoria; as fotos da régua continuam guardadas.
+create or replace function reabrir_turno(p_data date, p_motivo text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_ultimo date; v_apagados jsonb;
+begin
+  perform exigir(array['supervisor']);
+  if length(trim(coalesce(p_motivo, ''))) < 5 then raise exception 'Escreva o motivo para reabrir o turno.' using errcode = '22023'; end if;
+  select max(data) into v_ultimo from fechamentos;
+  if v_ultimo is null or p_data is distinct from v_ultimo then
+    raise exception 'Só dá para reabrir o último turno fechado%.', coalesce(' (' || to_char(v_ultimo, 'DD/MM') || ')', '') using errcode = '22023';
+  end if;
+  with d as (delete from fechamentos where data = p_data returning *)
+  select jsonb_agg(jsonb_build_object('tanque', tanque, 'saldo_calculado', saldo_calculado, 'saldo_medido', saldo_medido, 'diferenca', diferenca,
+                                      'frentista', (select nome from frentistas where id = d.frentista_id), 'fechado_em', criado_em) order by tanque)
+    into v_apagados from d;
+  perform auditar('turno.reaberto', 'fechamento', p_data::text, jsonb_build_object('motivo', left(trim(p_motivo), 500), 'fechamentos', v_apagados));
+  return jsonb_build_object('data', p_data, 'tanques', jsonb_array_length(v_apagados));
+end $$;
+
 -- Fotos de um registro, para o painel abrir (o painel gera o link temporário no Storage)
 create or replace function fotos_de(p_entidade text, p_chave text) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
@@ -1380,7 +1401,7 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frent
   corrigir_veiculo_app(text, text, numeric, integer), definir_preco_diesel(text, numeric, text),
   definir_pin(bigint, text), decidir_autorizacao(bigint, boolean, text), importar_vinculos(jsonb),
   decidir_abastecimento(bigint, text, text, jsonb), marcar_erro_kmm(bigint, text),
-  gerar_lote(), linhas_lote(bigint), fechar_lote(bigint, text), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)
+  gerar_lote(), linhas_lote(bigint), fechar_lote(bigint, text), reabrir_turno(date, text), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)
   to authenticated;
 -- As políticas RLS, as do Storage e os gatilhos chamam estas; precisam estar liberadas para quem está logado
 grant execute on function exigir(text[]), sou_gestor(), fora_do_turno(timestamp), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text),

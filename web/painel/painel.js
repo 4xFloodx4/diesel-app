@@ -554,7 +554,11 @@ TELAS.tanques = async () => {
       ${r.fs.map(f => `<tr class="${Math.abs(f.diferenca) > 20 ? 'divergente' : ''}"><td>${dataBR(f.data)}</td><td>${esc(f.tanque)}</td><td class="n">${nf(f.saldo_inicial, 0)}</td>
         <td class="n">${nf(f.chegadas, 0)}</td><td class="n">${nf(f.saidas, 0)}</td><td class="n">${nf(f.saldo_calculado, 0)}</td><td class="n">${nf(f.saldo_medido, 0)}</td>
         <td class="n">${Number(f.diferenca) > 0 ? '+' : ''}${nf(f.diferenca, 0)}</td><td>${esc(f.frentistas?.nome || '')}</td><td>${botaoFotos('fechamento', f.data, `Fechamento de ${dataBR(f.data)}`, r.ff[f.data])}</td></tr>`).join('')}
-      </tbody></table></div>` : '<p class="vazio">Nenhum fechamento ainda.</p>'}</section>
+      </tbody></table></div>` : '<p class="vazio">Nenhum fechamento ainda.</p>'}
+      ${r.fs.length ? `<div class="corpo"><form class="formulario" data-reabrir="${esc(r.fs[0].data)}">
+        <div class="field"><label class="lbl" for="re-motivo">Fechou sem querer? Reabrir o turno de ${dataBR(r.fs[0].data)}: o fechamento é apagado e o frentista volta a lançar e fecha de novo</label>
+          <textarea id="re-motivo" name="motivo" rows="2" maxlength="500" required minlength="5" placeholder="Ex.: frentista fechou antes do último abastecimento"></textarea></div>
+        <button class="btn small warn" type="submit">Reabrir turno de ${dataBR(r.fs[0].data)}</button></form></div>` : ''}</section>
     <section class="painel"><header><h2>Chegadas de diesel</h2><span>notas fiscais lançadas pelo posto</span></header>
       ${r.cs.length ? `<div class="tabela"><table><thead><tr><th>Data</th><th>Tanque</th><th>NF</th><th class="n">Litros</th><th class="n">Valor</th><th class="n">Régua</th><th>Caminhão</th><th>Lançado por</th><th>Alerta</th><th></th></tr></thead><tbody>
       ${r.cs.map(x => `<tr class="${x.alerta ? 'divergente' : ''}"><td>${dataHora(x.data_hora)}</td><td>${esc(x.tanque)}</td><td>${esc(x.nf)}</td><td class="n">${nf(x.litros, 0)}</td>
@@ -789,6 +793,14 @@ trabalho.addEventListener('submit', async e => {
   const d = Object.fromEntries(new FormData(f));
 
   if (f.dataset.decidir) return decidir(f, e.submitter?.dataset.decisao || 'revalidar');
+  if (f.dataset.reabrir) {
+    if ((d.motivo || '').trim().length < 5) { avisar('Escreva o motivo para reabrir o turno.', 'warn'); return; }
+    const botao = f.querySelector('button[type="submit"]');
+    if (f.dataset.confirmando !== '1') { f.dataset.confirmando = '1'; botao.textContent = 'Clique de novo para reabrir'; return; }
+    const r = await agir(() => rpc('reabrir_turno', { p_data: f.dataset.reabrir, p_motivo: d.motivo.trim() }));
+    if (r) { avisar(`Turno de ${dataBR(r.data)} reaberto. No app, o frentista toca em Atualizar e já pode lançar e fechar de novo.`); abrir('tanques', { semCarregando: true }); }
+    return;
+  }
   if (f.hasAttribute('data-filtros')) { est.filtros = { de: d.de, ate: d.ate, status: d.status, placa: d.placa.trim() }; return abrir('abastecimentos'); }
   if (f.hasAttribute('data-turno')) {
     if (d.abertura === d.fechamento) { avisar('Abertura e fechamento não podem ser iguais.', 'warn'); return; }

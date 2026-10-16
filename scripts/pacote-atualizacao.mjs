@@ -1,7 +1,9 @@
 // Gera o pacote de atualização das telas do app, publicado junto com o painel no GitHub Pages:
 //   dist/atualizacao/app-VERSAO.zip  (conteúdo de dist-android/)
-//   dist/atualizacao/versao.json     ({ version, url, checksum sha256 })
-// O app baixa o zip, confere o checksum e aplica na próxima abertura. Usa "zip" (Linux) ou "tar" (Windows).
+//   dist/atualizacao/versao.json     ({ version, url, checksum sha256, notas })
+// O app baixa o zip, confere o checksum e aplica assim que o frentista não estiver no meio de um lançamento.
+// notas: a frase do que mudou que o app mostra depois de atualizar (NOTAS_VERSAO; no GitHub, o título do commit).
+// Usa "zip" (Linux) ou "tar" (Windows).
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -29,5 +31,6 @@ if (process.platform === 'win32') {   // Windows 10+: o tar do sistema gera .zip
   execFileSync('zip', ['-r', '-X', '-q', join(pasta, nome), '.'], { cwd: join(RAIZ, 'dist-android') });
 }
 const checksum = createHash('sha256').update(readFileSync(join(pasta, nome))).digest('hex');
-writeFileSync(join(pasta, 'versao.json'), JSON.stringify({ version: versao, url: `${site}atualizacao/${nome}`, checksum }, null, 2));
+const notas = String(process.env.NOTAS_VERSAO || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+writeFileSync(join(pasta, 'versao.json'), JSON.stringify({ version: versao, url: `${site}atualizacao/${nome}`, checksum, notas }, null, 2));
 console.log(`Pacote de atualização ${versao}: ${nome} (sha256 ${checksum.slice(0, 12)}…)`);

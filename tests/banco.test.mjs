@@ -419,6 +419,25 @@ test('chegada e fechamento guardam fotos; caminho de foto fora do padrão é rec
   await assert.rejects(db.exec("update fotos set chave = chave || 'x'"), /não pode ser alterada/);
 });
 
+test('turno fechado sem querer: o supervisor reabre, o frentista lança e fecha de novo', async () => {
+  const dia = dh(0).slice(0, 10);
+  await assert.rejects(rpc(POSTO, 'reabrir_turno', { p_data: dia, p_motivo: 'Fechou sem querer' }), /Acesso negado/);
+  await assert.rejects(rpc(CHEFE, 'reabrir_turno', { p_data: dia, p_motivo: 'x' }), /motivo/);
+  await assert.rejects(rpc(CHEFE, 'reabrir_turno', { p_data: '2020-01-01', p_motivo: 'Fechou sem querer' }), /último turno fechado/);
+  const r = await rpc(CHEFE, 'reabrir_turno', { p_data: dia, p_motivo: 'Frentista fechou antes do último abastecimento' });
+  assert.equal(r.tanques, 1);
+  assert.equal((await rpc(POSTO, 'estado_posto')).fechado_hoje, false);
+  const a = await abastecer(reg(1, { km: 150900, litros: 10, encerrante: 7071910 }));
+  assert.ok(a.id);
+  await rpc(CHEFE, 'decidir_abastecimento', { p_id: a.id, p_acao: 'cancelar', p_motivo: 'Teste do turno reaberto' });
+  const [t] = await rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_fotos: [] });
+  assert.equal(Number(t.saldo_calculado), 12000 + 1000 - 944);
+  const [aud] = (await db.query("select conta, detalhes from auditoria where acao = 'turno.reaberto'")).rows;
+  assert.equal(aud.conta, CHEFE);
+  assert.equal(aud.detalhes.fechamentos[0].saldo_medido, 12000);
+  assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'fechamento', p_chave: dia })).length, 1);   // a foto da régua continua
+});
+
 test('supervisor não move lançamento para um dia já fechado', async () => {
   const ontem = await abastecer(reg(60 * 24, { placa: 'GHI8J90', km: 220100, litros: 10, encerrante: 512050, bomba: 2 }));
   assert.equal(ontem.status, 'Exceção');   // encerrante não bate: fica fora do lote
