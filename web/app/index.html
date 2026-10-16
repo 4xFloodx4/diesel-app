@@ -1,29 +1,34 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#b06e00">
+  <meta name="theme-color" content="#b86a07">
   <meta http-equiv="Content-Security-Policy" content="__CSP__">
+  <meta name="referrer" content="no-referrer">
   <title>Abastecimento</title>
   <link rel="icon" href="__RAIZ__comum/icone.svg" type="image/svg+xml">
   <link rel="stylesheet" href="__RAIZ__comum/base.css">
+  <link rel="stylesheet" href="__RAIZ__comum/pecas.css">
   <link rel="stylesheet" href="__RAIZ__app/app.css">
   <script type="module" src="__RAIZ__app/app.js"></script>
 </head>
 <body>
   <div class="tela">
     <header class="topo">
-      <div><b>Abastecimento</b><span id="subtitulo"></span></div>
-      <button class="link" id="sair" type="button" hidden>Trocar frentista</button>
+      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" rx="7" fill="#b86a07"/>
+        <rect x="8" y="6.5" width="10.5" height="17" rx="1.6" fill="#fff"/><rect x="9.8" y="8.6" width="6.9" height="4.4" rx=".8" fill="#b86a07"/>
+        <path d="M18.5 17.5h3.4V10" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/><rect x="6.6" y="22.6" width="13.4" height="1.9" rx=".9" fill="#fff"/></svg>
+      <div class="titulo"><b>Abastecimento</b><span id="subtitulo"></span></div>
+      <button class="trocar" id="sair" type="button" hidden>Trocar frentista</button>
     </header>
-    <div class="sync" id="sync" hidden></div>
     <main class="conteudo" id="conteudo"><p class="hint">Carregando…</p></main>
-    <nav class="abas" id="abas" hidden>
-      <button type="button" data-aba="abastecer">Abastecer</button>
-      <button type="button" data-aba="turno">Turno</button>
-      <button type="button" data-aba="chegada">Chegada</button>
-      <button type="button" data-aba="fechar">Fechar</button>
+    <nav class="abas" id="abas" hidden aria-label="Telas do app">
+      <button type="button" data-aba="abastecer"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 14V3h6v11M3 7h6M9 6h2l1.5 1.5V12a1 1 0 0 0 2 0V6L12 4"/></svg>Abastecer</button>
+      <button type="button" data-aba="turno"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h8M2 12h5"/></svg>Turno</button>
+      <button type="button" data-aba="chegada"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 10.5V5h8v5.5M9.5 7h3l2 2v1.5h-5"/><circle cx="4.5" cy="11.5" r="1.5"/><circle cx="12" cy="11.5" r="1.5"/></svg>Chegada</button>
+      <button type="button" data-aba="fechar"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h4v12H3zM3 5h2M3 8h2M3 11h2"/><path d="M10 6l2 2 3-4"/></svg>Fechar</button>
+      <button type="button" data-aba="ajuda"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M6.3 6.2a1.8 1.8 0 1 1 2.6 1.6c-.6.3-.9.7-.9 1.3M8 11.4v.1"/></svg>Ajuda</button>
     </nav>
   </div>
 </body>

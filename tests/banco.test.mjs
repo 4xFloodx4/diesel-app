@@ -58,7 +58,8 @@ before(async () => {
     insert into tanques values ('TQ01', 30000, 12000);
     insert into bombas values (1, 'TQ01', 7071046, true);
     insert into veiculos (placa, capacidade_l, km_inicial) values ('ABC1D23', 700, 149500), ('DEF4567', 600, 97500);
-    insert into motoristas (nome, cpf) values ('JOAO DA SILVA', '52998224725');`);
+    insert into motoristas (nome, cpf) values ('JOAO DA SILVA', '52998224725');
+    update configuracoes set abertura = '00:00', fechamento = '23:59:59';`);
   [ana, carlos] = (await db.query("select id from frentistas order by nome")).rows.map(r => r.id);
   const t = (await db.query("select to_char(agora_local(), 'YYYY-MM-DD\"T\"HH24:MI:SS') as t")).rows[0].t;
   base = new Date(t);
@@ -158,6 +159,21 @@ test('sem desconto: exige justificativa, espera autorização e não entra em lo
   await assert.rejects(rpc(CHEFE, 'decidir_autorizacao', { p_id: a.id, p_aprovar: true, p_motivo: 'de novo' }), /não está aguardando/);
 });
 
+test('fora do horário do turno: exige justificativa e vai para autorização', async () => {
+  const hora = (await db.query("select to_char(agora_local() - interval '3 minutes', 'HH24:MI:SS') as h")).rows[0].h;
+  await db.exec(`update configuracoes set abertura = '${hora}', fechamento = '${hora}'::time + interval '1 minute'`);
+  try {
+    await assert.rejects(abastecer(reg(5, { placa: 'DEF4567', km: 98000, litros: 5, encerrante: 7071791 })), /fora do horário do turno/);
+    const a = await abastecer(reg(5, { placa: 'DEF4567', km: 98000, litros: 5, encerrante: 7071791, justificativa_horario: 'Entrega urgente depois do fechamento' }));
+    assert.equal(a.status, 'Aguardando autorização');
+    const linha = (await db.query('select fora_horario, justificativa_horario from abastecimentos where id = $1', [a.id])).rows[0];
+    assert.deepEqual(linha, { fora_horario: true, justificativa_horario: 'Entrega urgente depois do fechamento' });
+    await rpc(CHEFE, 'decidir_autorizacao', { p_id: a.id, p_aprovar: false, p_motivo: 'Teste: recusado' });
+  } finally {
+    await db.exec("update configuracoes set abertura = '00:00', fechamento = '23:59:59'");
+  }
+});
+
 test('autorização recusada cancela o lançamento', async () => {
   const a = await abastecer(reg(7, { placa: 'DEF4567', km: 98000, litros: 10, encerrante: 7071796, desconto: false,
     justificativa_desconto: 'Sem tempo de descontar' }));
@@ -194,6 +210,11 @@ test('frentista cadastra motorista com CPF válido; duplicado é recusado', asyn
 });
 
 // ---------- Chegada, fechamento e fotos ----------
+test('chegada com data no futuro ou antiga é recusada', async () => {
+  await assert.rejects(rpc(POSTO, 'registrar_chegada', { p_sessao: sessao, p_dados: { uuid: randomUUID(), tanque: 'TQ01', data_hora: dh(-120), nf: '7', litros: 100 } }), /no futuro/);
+  await assert.rejects(rpc(POSTO, 'registrar_chegada', { p_sessao: sessao, p_dados: { uuid: randomUUID(), tanque: 'TQ01', data_hora: dh(60 * 24 * 8), nf: '7', litros: 100 } }), /7 dias/);
+});
+
 test('chegada e fechamento guardam fotos; caminho de foto fora do padrão é recusado', async () => {
   await assert.rejects(rpc(POSTO, 'registrar_chegada', { p_sessao: sessao, p_dados: { uuid: randomUUID(), tanque: 'TQ01', data_hora: dh(5), nf: '1', litros: 100 },
     p_fotos: ['../segredo.jpg'] }), /Foto inválida/);
@@ -205,6 +226,9 @@ test('chegada e fechamento guardam fotos; caminho de foto fora do padrão é rec
   // saídas pela bomba 1: 640 + 100 + 114 (o recusado foi cancelado e não conta); entrada: 1000
   assert.equal(Number(t.saldo_calculado), 12000 + 1000 - 854);
   await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 1 }, p_fotos: [] }), /já foi fechado/);
+  // depois do fechamento, nada mais entra com a data do dia
+  await assert.rejects(abastecer(reg(1, { km: 150900, litros: 10, encerrante: 7071910 })), /já foi fechado/);
+  await assert.rejects(rpc(POSTO, 'registrar_chegada', { p_sessao: sessao, p_dados: { uuid: randomUUID(), tanque: 'TQ01', data_hora: dh(1), nf: '9', litros: 10 } }), /já foi fechado/);
   await assert.rejects(db.exec('update fotos set chave = chave'), /não pode ser alterada/);
 });
 
@@ -286,4 +310,34 @@ test('supervisor e administrador excluem foto, com auditoria; celular não', asy
   const a = (await db.query("select conta, detalhes from auditoria where acao = 'foto.excluida' and entidade_id = 'DEF4567' order by id")).rows;
   assert.deepEqual(a.map(x => x.conta), [CHEFE, DONO]);
   await assert.rejects(rpc(CHEFE, 'excluir_foto', { p_caminho: f1 }), /não encontrada/);
+});
+
+test('15 PINs errados no mesmo dia bloqueiam até o supervisor definir um PIN novo', async () => {
+  await rpc(CHEFE, 'definir_pin', { p_frentista_id: carlos, p_pin: '2958' });
+  for (let i = 0; i < 15; i++) {
+    await db.exec(`update frentistas_pin set bloqueado_ate = null where frentista_id = ${carlos} and bloqueado_ate <> 'infinity'`);   // pula a espera de 5 min
+    await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '0000' });
+  }
+  const r = await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '2958' });
+  assert.match(r.erro, /muitas tentativas erradas hoje/);
+  await rpc(CHEFE, 'definir_pin', { p_frentista_id: carlos, p_pin: '2958' });
+  assert.equal((await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '2958' })).ok, true);
+});
+
+test('sair_frentista exige conta liberada e só derruba sessão do próprio celular', async () => {
+  const nova = (await rpc(POSTO, 'entrar_frentista', { p_frentista_id: ana, p_pin: '5820' })).sessao;
+  const valida = () => db.query("select count(*)::int as n from sessoes_frentista where token_hash = encode(sha256(convert_to($1, 'UTF8')), 'hex')", [nova]).then(r => r.rows[0].n);
+  await assert.rejects(rpc(ESTRANHO, 'sair_frentista', { p_sessao: nova }), /Acesso negado/);
+  await rpc(CHEFE, 'sair_frentista', { p_sessao: nova });   // outra conta não derruba a sessão do celular
+  assert.equal(await valida(), 1);
+  await rpc(POSTO, 'sair_frentista', { p_sessao: nova });
+  assert.equal(await valida(), 0);
+});
+
+test('horário do turno: só o administrador altera, e o celular recebe', async () => {
+  assert.equal((await como(CHEFE, "update configuracoes set fechamento = '22:00' returning id")).length, 0);
+  assert.equal((await como(DONO, "update configuracoes set abertura = '05:00', fechamento = '23:00' returning id")).length, 1);
+  assert.deepEqual((await rpc(POSTO, 'estado_posto')).turno, { abertura: '05:00', fechamento: '23:00' });
+  assert.ok((await db.query("select 1 from auditoria where acao = 'cadastro.configuracoes.update'")).rows.length);
+  await db.exec("update configuracoes set abertura = '00:00', fechamento = '23:59:59'");
 });

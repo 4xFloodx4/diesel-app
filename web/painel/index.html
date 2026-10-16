@@ -1,34 +1,33 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-theme="light">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta http-equiv="Content-Security-Policy" content="__CSP__">
+  <meta name="referrer" content="no-referrer">
   <title>Painel do Diesel</title>
   <link rel="icon" href="__RAIZ__comum/icone.svg" type="image/svg+xml">
   <link rel="stylesheet" href="__RAIZ__comum/base.css">
+  <link rel="stylesheet" href="__RAIZ__comum/pecas.css">
   <link rel="stylesheet" href="__RAIZ__painel/painel.css">
   <script type="module" src="__RAIZ__painel/painel.js"></script>
 </head>
 <body>
-  <header class="topo">
-    <div class="marca"><b>Painel do Diesel</b><span id="quem"></span></div>
-    <nav class="abas" id="abas" hidden>
-      <button type="button" data-aba="resumo">Resumo</button>
-      <button type="button" data-aba="autorizacoes">Autorizações <span class="contador" id="n-autorizacoes" hidden></span></button>
-      <button type="button" data-aba="excecoes">Exceções <span class="contador" id="n-excecoes" hidden></span></button>
-      <button type="button" data-aba="abastecimentos">Abastecimentos</button>
-      <button type="button" data-aba="lotes">Lotes KMM</button>
-      <button type="button" data-aba="fechamentos">Fechamentos</button>
-      <button type="button" data-aba="frentistas">Frentistas</button>
-      <button type="button" data-aba="cadastros">Cadastros</button>
-      <button type="button" data-aba="acessos">Acessos</button>
-      <button type="button" data-aba="auditoria">Auditoria</button>
-    </nav>
-    <button class="btn small ghost" id="sair" type="button" hidden>Sair</button>
-  </header>
-  <div id="aviso" class="aviso" hidden></div>
-  <main class="pagina" id="pagina"><p class="hint">Carregando…</p></main>
+  <div class="app sem-menu" id="app">
+    <nav class="lado" id="lado" aria-label="Menu do painel"></nav>
+    <div class="coluna">
+      <div class="barra-movel" id="barra-movel">
+        <button type="button" id="abrir-menu" aria-label="Abrir menu" aria-expanded="false" aria-controls="lado">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+          <span class="badge num" id="badge-menu" hidden></span></button>
+        <b id="titulo-movel">Diesel</b>
+      </div>
+      <main class="trabalho" id="trabalho"><p class="hint">Carregando…</p></main>
+    </div>
+    <div class="veu-menu" id="veu-menu"></div>
+    <div class="puxador" id="puxador" aria-hidden="true"></div>
+  </div>
+  <div class="avisos" id="aviso" aria-live="polite"></div>
   <div class="modal" id="modal" hidden></div>
 </body>
 </html>

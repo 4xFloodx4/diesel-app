@@ -8,10 +8,15 @@ import { nativo } from './supa.js';
 export const VERSAO_WEB = __VERSAO_WEB__;
 const URL_VERSAO = __URL_ATUALIZACAO__;
 
+// Avisa que esta versão abriu bem; sem isso, o atualizador desfaz a última atualização
+export async function confirmarAbertura() {
+  if (!nativo) return;
+  try { await CapacitorUpdater.notifyAppReady(); } catch { /* sem atualizador: versão de teste */ }
+}
+
 export async function prepararAtualizacao() {
   if (!nativo) return;
-  // Avisa que esta versão abriu bem; sem isso, o atualizador desfaz a última atualização
-  try { await CapacitorUpdater.notifyAppReady(); } catch { /* sem atualizador: versão de teste */ }
+  await confirmarAbertura();
   if (!URL_VERSAO) return;
   try {
     const resp = await fetch(`${URL_VERSAO}?t=${Date.now()}`, { cache: 'no-store' });

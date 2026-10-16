@@ -91,9 +91,10 @@ Para atualizar o app depois, crie uma nova release com tag maior (`v1.0.1`, `v1.
 ## 7. Primeiro uso
 
 **No painel** (`https://SEU-USUARIO.github.io/diesel-app/painel/`), entre com a sua conta Google de supervisor:
-0. **Frentistas**: cadastre cada frentista com um **PIN de 4 números**. É com o nome e o PIN que ele entra no app.
-1. **Acessos**: libere o e-mail Google do celular do posto, como "Celular do posto".
-2. **Cadastros**:
+0. **Horário do turno** (só o administrador, em Sistema): o padrão é das 05:00 às 23:00. Fora dele, o lançamento precisa de justificativa e autorização.
+1. **Frentistas**: cadastre cada frentista com um **PIN de 4 números**. É com o nome e o PIN que ele entra no app.
+2. **Acessos**: libere o e-mail Google do celular do posto, como "Celular do posto".
+3. **Cadastros** (Tanques e fechamentos; Veículos e motoristas):
    - tanques: capacidade e saldo medido no dia da implantação;
    - bombas: encerrante lido no dia da implantação;
    - veículos e motoristas: importe os CSV exportados do KMM (`placa;capacidade_tanque_l;ultimo_km` e `nome;cpf`).
@@ -119,3 +120,5 @@ Só é preciso instalar um APK novo quando mudar algo da "casca" do app: ícone,
 ## Atualizar o banco
 
 Quando o `supabase/schema.sql` mudar, rode o arquivo inteiro de novo no SQL Editor. Ele só cria o que falta e atualiza as regras; nenhum dado é apagado.
+
+Rode **antes** de publicar telas novas que dependam dele (por exemplo, o horário do turno): as telas novas chamam colunas e funções que só existem depois.

@@ -103,6 +103,24 @@ language sql immutable as $$
   select coalesce(p_caminho ~ ('^' || p_pasta || '/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$'), false)
 $$;
 
+-- ---------- Configurações (uma linha só) ----------
+create table if not exists configuracoes (
+  id             integer primary key default 1 check (id = 1),
+  abertura       time not null default '05:00',
+  fechamento     time not null default '23:00',
+  atualizado_em  timestamptz not null default now(),
+  check (abertura <> fechamento)
+);
+insert into configuracoes (id) values (1) on conflict (id) do nothing;
+
+-- Fora do turno: antes da abertura ou a partir do fechamento (aceita turno que vira a meia-noite)
+create or replace function fora_do_turno(p_dh timestamp) returns boolean
+language sql stable security definer set search_path = public as $$
+  select case when c.abertura < c.fechamento then p_dh::time < c.abertura or p_dh::time >= c.fechamento
+              else p_dh::time < c.abertura and p_dh::time >= c.fechamento end
+    from configuracoes c where c.id = 1
+$$;
+
 -- ---------- Cadastros ----------
 create table if not exists frentistas (
   id     bigint generated always as identity primary key,
@@ -119,6 +137,8 @@ create table if not exists frentistas_pin (
   bloqueado_ate  timestamptz,
   alterado_em    timestamptz not null default now()
 );
+alter table frentistas_pin add column if not exists falhas_dia integer not null default 0;
+alter table frentistas_pin add column if not exists dia_falhas date;
 
 create table if not exists sessoes_frentista (
   token_hash    text primary key,
@@ -217,6 +237,8 @@ alter table abastecimentos add column if not exists desconto_confirmado boolean 
 alter table abastecimentos add column if not exists justificativa_desconto text check (length(justificativa_desconto) <= 500);
 alter table abastecimentos add column if not exists autorizado_por text;
 alter table abastecimentos add column if not exists autorizado_em timestamptz;
+alter table abastecimentos add column if not exists fora_horario boolean not null default false;
+alter table abastecimentos add column if not exists justificativa_horario text check (length(justificativa_horario) <= 500);
 alter table abastecimentos drop constraint if exists abastecimentos_status_check;
 alter table abastecimentos add constraint abastecimentos_status_check check (status in
   ('Aguardando autorização', 'Pronto', 'Exceção', 'Em lote', 'Lançado', 'Erro', 'Cancelado'));
@@ -339,7 +361,7 @@ create trigger proteger before insert or update or delete on acessos
 do $$
 declare t text;
 begin
-  foreach t in array array['veiculos', 'motoristas', 'frentistas', 'tanques', 'bombas', 'acessos'] loop
+  foreach t in array array['veiculos', 'motoristas', 'frentistas', 'tanques', 'bombas', 'acessos', 'configuracoes'] loop
     execute format('drop trigger if exists normalizar on %I', t);
     execute format('create trigger normalizar before insert or update on %I for each row execute function normalizar_cadastro()', t);
     execute format('drop trigger if exists auditar on %I', t);
@@ -374,7 +396,8 @@ begin
     raise exception 'Frentista não encontrado.' using errcode = 'P0002';
   end if;
   insert into frentistas_pin (frentista_id, hash, sal) values (p_frentista_id, hash_pin(p_pin, v_sal), v_sal)
-  on conflict (frentista_id) do update set hash = excluded.hash, sal = excluded.sal, falhas = 0, bloqueado_ate = null, alterado_em = now();
+  on conflict (frentista_id) do update set hash = excluded.hash, sal = excluded.sal, falhas = 0, falhas_dia = 0, dia_falhas = null,
+                                           bloqueado_ate = null, alterado_em = now();
   delete from sessoes_frentista where frentista_id = p_frentista_id;   -- PIN novo derruba quem estava logado
   perform auditar('frentista.pin_definido', 'frentistas', p_frentista_id::text, null);
 end $$;
@@ -382,7 +405,7 @@ end $$;
 -- Não lança erro quando o PIN está errado: o contador de tentativas precisa ser gravado.
 create or replace function entrar_frentista(p_frentista_id bigint, p_pin text) returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare v_pin frentistas_pin; v_f frentistas; v_token text; v_falhas integer;
+declare v_pin frentistas_pin; v_f frentistas; v_token text; v_falhas integer; v_dia integer;
 begin
   perform exigir(array['posto', 'supervisor']);
   select * into v_f from frentistas where id = p_frentista_id and ativo;
@@ -390,17 +413,24 @@ begin
   if v_f.id is null or v_pin.frentista_id is null then
     return jsonb_build_object('ok', false, 'erro', 'Frentista sem PIN cadastrado. Peça ao supervisor.');
   end if;
+  if v_pin.bloqueado_ate = 'infinity' then
+    return jsonb_build_object('ok', false, 'erro', 'Bloqueado por muitas tentativas erradas hoje. Peça ao supervisor um PIN novo.');
+  end if;
   if v_pin.bloqueado_ate > now() then
     return jsonb_build_object('ok', false, 'erro', format('Bloqueado por tentativas erradas. Tente às %s ou peça ao supervisor um PIN novo.',
                               to_char(v_pin.bloqueado_ate at time zone 'America/Sao_Paulo', 'HH24:MI')));
   end if;
   if hash_pin(coalesce(p_pin, ''), v_pin.sal) <> v_pin.hash then
     v_falhas := v_pin.falhas + 1;
-    update frentistas_pin set falhas = case when v_falhas >= 5 then 0 else v_falhas end,
-           bloqueado_ate = case when v_falhas >= 5 then now() + interval '5 minutes' end
+    v_dia := case when v_pin.dia_falhas = hoje() then v_pin.falhas_dia else 0 end + 1;
+    update frentistas_pin set falhas = case when v_falhas >= 5 then 0 else v_falhas end, falhas_dia = v_dia, dia_falhas = hoje(),
+           bloqueado_ate = case when v_dia >= 15 then 'infinity'::timestamptz
+                                when v_falhas >= 5 then now() + interval '5 minutes' end
      where frentista_id = p_frentista_id;
-    perform auditar('frentista.pin_errado', 'frentistas', p_frentista_id::text, jsonb_build_object('tentativa', v_falhas));
-    return jsonb_build_object('ok', false, 'erro', case when v_falhas >= 5 then 'PIN errado 5 vezes. Bloqueado por 5 minutos.'
+    perform auditar('frentista.pin_errado', 'frentistas', p_frentista_id::text,
+                    jsonb_build_object('tentativa', v_falhas, 'no_dia', v_dia, 'frentista', v_f.nome));
+    return jsonb_build_object('ok', false, 'erro', case when v_dia >= 15 then 'Muitas tentativas erradas hoje. Peça ao supervisor um PIN novo.'
+                                                        when v_falhas >= 5 then 'PIN errado 5 vezes. Bloqueado por 5 minutos.'
                                                         else format('PIN errado. Restam %s tentativa(s).', 5 - v_falhas) end);
   end if;
   update frentistas_pin set falhas = 0, bloqueado_ate = null where frentista_id = p_frentista_id;
@@ -408,7 +438,7 @@ begin
   insert into sessoes_frentista (token_hash, frentista_id, conta, expira_em)
   values (encode(sha256(convert_to(v_token, 'UTF8')), 'hex'), p_frentista_id, meu_email(), now() + interval '30 days');
   delete from sessoes_frentista where expira_em < now();
-  perform auditar('frentista.entrou', 'frentistas', p_frentista_id::text, null);
+  perform auditar('frentista.entrou', 'frentistas', p_frentista_id::text, jsonb_build_object('frentista', v_f.nome));
   return jsonb_build_object('ok', true, 'sessao', v_token, 'frentista', jsonb_build_object('id', v_f.id, 'nome', v_f.nome));
 end $$;
 
@@ -425,10 +455,14 @@ begin
   return v_id;
 end $$;
 
+drop function if exists sair_frentista(text);
 create or replace function sair_frentista(p_sessao text) returns void
-language sql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public as $$
+begin
+  perform exigir(array['posto', 'supervisor']);
   delete from sessoes_frentista where token_hash = encode(sha256(convert_to(coalesce(p_sessao, ''), 'UTF8')), 'hex')
-$$;
+     and conta = meu_email();
+end $$;
 
 -- ---------- Conferência (as mesmas regras que substituem o analista) ----------
 create or replace function conferir_abastecimento(
@@ -573,10 +607,13 @@ begin
         'encerrante_anterior', greatest(b.encerrante_inicial, (select max(encerrante) from abastecimentos a where a.bomba = b.numero and a.status <> 'Cancelado'))
       ) order by b.numero) from bombas b where b.ativa), '[]'),
     'tanques', calcular_fechamento(v_hoje),
+    'turno', (select jsonb_build_object('abertura', to_char(abertura, 'HH24:MI'), 'fechamento', to_char(fechamento, 'HH24:MI'))
+                from configuracoes where id = 1),
+    'fechado_hoje', exists (select 1 from fechamentos where data = v_hoje),
     'hoje', coalesce((select jsonb_agg(jsonb_build_object(
         'id', a.id, 'uuid', a.uuid, 'data_hora', a.data_hora, 'placa', a.placa, 'motorista', a.motorista, 'km', a.km,
         'litros', a.litros, 'encerrante', a.encerrante, 'bomba', a.bomba, 'status', a.status, 'problemas', a.problemas,
-        'desconto_confirmado', a.desconto_confirmado, 'frentista', f.nome) order by a.data_hora desc)
+        'desconto_confirmado', a.desconto_confirmado, 'fora_horario', a.fora_horario, 'frentista', f.nome) order by a.data_hora desc)
       from abastecimentos a join frentistas f on f.id = a.frentista_id where a.data_hora::date = v_hoje), '[]'));
 end $$;
 
@@ -585,12 +622,28 @@ drop function if exists registrar_abastecimentos(jsonb);
 drop function if exists registrar_chegadas(jsonb);
 drop function if exists registrar_fechamento(jsonb, bigint);
 
+-- Data e hora de um lançamento novo: nem no futuro, nem antiga, nem num dia já fechado
+create or replace function validar_data_lancamento(p_dh timestamp) returns void
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if p_dh is null then raise exception 'Informe a data e a hora.' using errcode = '22023'; end if;
+  if p_dh > agora_local() + interval '10 minutes' then
+    raise exception 'A hora % está no futuro. Confira o relógio do celular.', to_char(p_dh, 'DD/MM HH24:MI') using errcode = '22023';
+  end if;
+  if p_dh < agora_local() - interval '7 days' then
+    raise exception 'Lançamento de mais de 7 dias atrás não é aceito pelo app. Fale com o supervisor.' using errcode = '22023';
+  end if;
+  if exists (select 1 from fechamentos where data = p_dh::date) then
+    raise exception 'O turno de % já foi fechado. Lançamentos desse dia não são mais aceitos.', to_char(p_dh, 'DD/MM') using errcode = '22023';
+  end if;
+end $$;
+
 create or replace function registrar_abastecimento(p_sessao text, p_dados jsonb) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
   r jsonb := p_dados; v_ex abastecimentos; c jsonb; v_id bigint; v_status text;
   v_dh timestamp; v_km integer; v_lt numeric; v_enc numeric; v_bomba integer; v_frent bigint;
-  v_desconto boolean; v_just text;
+  v_desconto boolean; v_just text; v_fora boolean; v_just_h text; v_c configuracoes;
 begin
   perform exigir(array['posto', 'supervisor']);
   v_frent := frentista_da_sessao(p_sessao);
@@ -610,18 +663,27 @@ begin
   if not v_desconto and (v_just is null or length(v_just) < 5) then
     raise exception 'Sem o desconto do motorista, escreva a justificativa para o supervisor.' using errcode = '22023';
   end if;
+  perform validar_data_lancamento(v_dh);
+  v_fora := fora_do_turno(v_dh);
+  v_just_h := nullif(trim(coalesce(r ->> 'justificativa_horario', '')), '');
+  if v_fora and (v_just_h is null or length(v_just_h) < 5) then
+    select * into v_c from configuracoes where id = 1;
+    raise exception 'Lançamento fora do horário do turno (% às %): escreva a justificativa para o supervisor.',
+      to_char(v_c.abertura, 'HH24:MI'), to_char(v_c.fechamento, 'HH24:MI') using errcode = '22023';
+  end if;
   c := conferir_abastecimento(v_dh, r ->> 'placa', r ->> 'motorista', v_km, v_lt, v_enc, v_bomba);
-  v_status := case when v_desconto then c ->> 'status' else 'Aguardando autorização' end;
+  v_status := case when v_desconto and not v_fora then c ->> 'status' else 'Aguardando autorização' end;
   insert into abastecimentos (uuid, data_hora, placa, motorista, cpf, km, litros, encerrante, encerrante_anterior,
                               bomba, tanque, status, problemas, obs_frentista, frentista_id, conta,
-                              desconto_confirmado, justificativa_desconto)
+                              desconto_confirmado, justificativa_desconto, fora_horario, justificativa_horario)
   values ((r ->> 'uuid')::uuid, v_dh, c ->> 'placa', c ->> 'motorista', c ->> 'cpf', v_km, v_lt, v_enc,
           (c ->> 'encerrante_anterior')::numeric, v_bomba, c ->> 'tanque', v_status, c -> 'problemas',
-          left(nullif(trim(r ->> 'obs'), ''), 500), v_frent, meu_email(), v_desconto, left(v_just, 500))
+          left(nullif(trim(r ->> 'obs'), ''), 500), v_frent, meu_email(), v_desconto, left(v_just, 500),
+          v_fora, case when v_fora then left(v_just_h, 500) end)
   returning id into v_id;
   perform auditar('abastecimento.recebido', 'abastecimento', v_id::text,
-                  jsonb_build_object('placa', c ->> 'placa', 'litros', v_lt, 'status', v_status, 'frentista_id', v_frent,
-                                     'desconto', v_desconto));
+                  jsonb_build_object('placa', c ->> 'placa', 'litros', v_lt, 'bomba', v_bomba, 'status', v_status, 'frentista_id', v_frent,
+                                     'frentista', (select nome from frentistas where id = v_frent), 'desconto', v_desconto, 'fora_horario', v_fora));
   return jsonb_build_object('uuid', r ->> 'uuid', 'id', v_id, 'status', v_status, 'problemas', c -> 'problemas');
 end $$;
 
@@ -633,7 +695,9 @@ begin
   v_frent := frentista_da_sessao(p_sessao);
   select * into v_ex from chegadas where uuid = (r ->> 'uuid')::uuid;
   if v_ex.id is not null then return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'alerta', v_ex.alerta); end if;
+  perform validar_data_lancamento(date_trunc('second', (r ->> 'data_hora')::timestamp));
   v_lt := (r ->> 'litros')::numeric;
+  if v_lt is null or v_lt <= 0 or v_lt >= 100000 then raise exception 'Litros da nota fora do permitido.' using errcode = '22023'; end if;
   if r ->> 'regua_antes' is not null and r ->> 'regua_depois' is not null then
     v_sub := (r ->> 'regua_depois')::numeric - (r ->> 'regua_antes')::numeric;
     if abs(v_sub - v_lt) > 20 then v_alerta := format('NF diz %s L, mas a régua subiu %s L.', fmt(v_lt), fmt(v_sub)); end if;
@@ -648,7 +712,8 @@ begin
   returning id into v_id;
   perform registrar_fotos('chegada', v_id::text, p_fotos, v_frent);
   perform auditar('chegada.recebida', 'chegada', v_id::text,
-                  jsonb_build_object('nf', r ->> 'nf', 'litros', v_lt, 'fotos', coalesce(cardinality(p_fotos), 0)));
+                  jsonb_build_object('nf', r ->> 'nf', 'litros', v_lt, 'tanque', upper(r ->> 'tanque'), 'fotos', coalesce(cardinality(p_fotos), 0),
+                                     'frentista', (select nome from frentistas where id = v_frent)));
   return jsonb_build_object('uuid', r ->> 'uuid', 'id', v_id, 'alerta', v_alerta);
 end $$;
 
@@ -660,6 +725,9 @@ begin
   v_frent := frentista_da_sessao(p_sessao);
   if exists (select 1 from fechamentos where data = v_dia) then
     raise exception 'O dia já foi fechado.' using errcode = '22023';
+  end if;
+  if not exists (select 1 from tanques) then
+    raise exception 'Nenhum tanque cadastrado. Peça ao supervisor.' using errcode = '22023';
   end if;
   for t in select value from jsonb_array_elements(calcular_fechamento(v_dia)) loop
     v_med := (p_medidos ->> (t ->> 'tanque'))::numeric;
@@ -675,7 +743,8 @@ begin
   end loop;
   perform registrar_fotos('fechamento', v_dia::text, p_fotos, v_frent);
   perform auditar('fechamento.registrado', 'fechamento', v_dia::text,
-                  jsonb_build_object('medidos', p_medidos, 'frentista_id', v_frent, 'fotos', coalesce(cardinality(p_fotos), 0)));
+                  jsonb_build_object('medidos', p_medidos, 'frentista_id', v_frent, 'frentista', (select nome from frentistas where id = v_frent),
+                                     'fotos', coalesce(cardinality(p_fotos), 0)));
   return v_res;
 end $$;
 
@@ -888,7 +957,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['acessos', 'frentistas', 'frentistas_pin', 'sessoes_frentista', 'veiculos', 'motoristas', 'tanques',
-                           'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'fotos', 'auditoria'] loop
+                           'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'fotos', 'auditoria', 'configuracoes'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon', t);
     execute format('drop policy if exists supervisor_le on %I', t);
@@ -896,7 +965,7 @@ begin
   end loop;
   -- Leitura pelo painel (PINs, sessões e auditoria têm regra própria)
   foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'tanques', 'bombas',
-                           'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'fotos'] loop
+                           'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'fotos', 'configuracoes'] loop
     execute format('create policy supervisor_le on %I for select to authenticated using (sou_gestor())', t);
   end loop;
   -- Cadastros: supervisor e administrador editam direto (com histórico automático pelos gatilhos)
@@ -905,6 +974,10 @@ begin
   end loop;
 end $$;
 -- frentistas_pin e sessoes_frentista: sem política nenhuma (só as funções acessam)
+-- Horário do turno: só o administrador altera
+drop policy if exists admin_edita on configuracoes;
+create policy admin_edita on configuracoes for update to authenticated
+  using (meu_papel() = 'administrador') with check (meu_papel() = 'administrador');
 
 -- Auditoria: o administrador vê tudo; o supervisor não vê as ações de administradores
 drop policy if exists supervisor_le on auditoria;
@@ -951,7 +1024,7 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frent
   gerar_lote(), linhas_lote(bigint), fechar_lote(bigint, text), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)
   to authenticated;
 -- As políticas RLS, as do Storage e os gatilhos chamam estas; precisam estar liberadas para quem está logado
-grant execute on function exigir(text[]), sou_gestor(), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text),
+grant execute on function exigir(text[]), sou_gestor(), fora_do_turno(timestamp), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text),
   placa_valida(text), cpf_valido(text), fmt(numeric), foto_valida(text, text), normalizar_cadastro(), auditar_cadastro(),
   bloquear_alteracao(), proteger_acessos()
   to authenticated;
