@@ -15,10 +15,14 @@
 create table if not exists acessos (
   email      text primary key check (email = lower(email) and email like '%@%'),
   nome       text not null,
-  papel      text not null check (papel in ('posto', 'supervisor')),
+  papel      text not null check (papel in ('posto', 'supervisor', 'administrador')),
   ativo      boolean not null default true,
   criado_em  timestamptz not null default now()
 );
+
+-- Bancos criados antes do papel "administrador": atualiza a regra de papéis permitidos
+alter table acessos drop constraint if exists acessos_papel_check;
+alter table acessos add constraint acessos_papel_check check (papel in ('posto', 'supervisor', 'administrador'));
 
 create or replace function meu_email() returns text
 language sql stable set search_path = public as $$
@@ -33,11 +37,13 @@ language sql stable security definer set search_path = public as $$
      and coalesce(auth.jwt() -> 'app_metadata' ->> 'provider', '') = 'google'
 $$;
 
+-- O administrador pode tudo que o supervisor pode
 create or replace function exigir(p_papeis text[]) returns text
 language plpgsql stable security definer set search_path = public as $$
 declare v_papel text := meu_papel();
 begin
-  if v_papel is null or not (v_papel = any (p_papeis)) then
+  if v_papel is null or not (v_papel = any (p_papeis)
+                             or (v_papel = 'administrador' and 'supervisor' = any (p_papeis))) then
     raise exception 'Acesso negado para %', coalesce(nullif(meu_email(), ''), 'usuário sem login')
       using errcode = '42501';
   end if;
@@ -248,6 +254,36 @@ begin
                   jsonb_build_object('antes', v_velho, 'depois', v_novo));
   return coalesce(new, old);
 end $$;
+
+-- Administradores: só outro administrador mexe neles, e nunca fica sem nenhum ativo.
+-- Alterações feitas no SQL Editor do Supabase (sem login, pelo dono do projeto) passam: é a saída de emergência.
+create or replace function proteger_acessos() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare v_papel text := meu_papel(); v_outros integer;
+begin
+  if meu_email() = '' then return coalesce(new, old); end if;
+  if v_papel is distinct from 'administrador' then
+    if tg_op <> 'INSERT' and old.papel = 'administrador' then
+      raise exception 'Somente um administrador pode alterar ou excluir um administrador.' using errcode = '42501';
+    end if;
+    if tg_op <> 'DELETE' and new.papel = 'administrador' then
+      raise exception 'Somente um administrador pode dar acesso de administrador.' using errcode = '42501';
+    end if;
+  end if;
+  if tg_op <> 'INSERT' and old.papel = 'administrador' and old.ativo
+     and (tg_op = 'DELETE' or new.papel <> 'administrador' or not new.ativo) then
+    select count(*) into v_outros from acessos where papel = 'administrador' and ativo and email <> old.email;
+    if v_outros = 0 then
+      raise exception 'Este é o único administrador ativo: não pode ser excluído, desativado nem perder o papel. Crie outro administrador antes.'
+        using errcode = '42501';
+    end if;
+  end if;
+  return coalesce(new, old);
+end $$;
+
+drop trigger if exists proteger on acessos;
+create trigger proteger before insert or update or delete on acessos
+  for each row execute function proteger_acessos();
 
 do $$
 declare t text;
@@ -625,12 +661,12 @@ begin
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon', t);
     execute format('drop policy if exists supervisor_le on %I', t);
-    execute format('create policy supervisor_le on %I for select to authenticated using (meu_papel() = ''supervisor'')', t);
+    execute format('create policy supervisor_le on %I for select to authenticated using (meu_papel() in (''supervisor'', ''administrador''))', t);
   end loop;
   -- Cadastros: o supervisor edita direto (com histórico automático pelos gatilhos)
   foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'tanques', 'bombas'] loop
     execute format('drop policy if exists supervisor_edita on %I', t);
-    execute format('create policy supervisor_edita on %I for all to authenticated using (meu_papel() = ''supervisor'') with check (meu_papel() = ''supervisor'')', t);
+    execute format('create policy supervisor_edita on %I for all to authenticated using (meu_papel() in (''supervisor'', ''administrador'')) with check (meu_papel() in (''supervisor'', ''administrador''))', t);
   end loop;
   -- Movimento (abastecimentos, chegadas, fechamentos, lotes) e auditoria: só pelas funções acima
 end $$;
@@ -651,5 +687,5 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), registrar_ab
   to authenticated;
 -- As políticas RLS e os gatilhos chamam estas; precisam estar liberadas para quem está logado
 grant execute on function exigir(text[]), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text), placa_valida(text),
-  cpf_valido(text), fmt(numeric), normalizar_cadastro(), auditar_cadastro(), bloquear_alteracao()
+  cpf_valido(text), fmt(numeric), normalizar_cadastro(), auditar_cadastro(), bloquear_alteracao(), proteger_acessos()
   to authenticated;

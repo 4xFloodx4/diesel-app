@@ -19,7 +19,7 @@ const SUPABASE = `
   alter default privileges in schema public grant all on functions to anon, authenticated;
   alter default privileges in schema public grant all on sequences to anon, authenticated;
 `;
-const POSTO = 'posto1@empresa.com', CHEFE = 'chefe@empresa.com', ESTRANHO = 'qualquer@gmail.com';
+const POSTO = 'posto1@empresa.com', CHEFE = 'chefe@empresa.com', ESTRANHO = 'qualquer@gmail.com', DONO = 'dono@empresa.com';
 let db, base, frentistaId;
 
 // Executa como um usuário logado (papel authenticated + claims do JWT), igual ao PostgREST do Supabase
@@ -49,7 +49,7 @@ before(async () => {
   await db.exec(SCHEMA);
   await db.exec(SCHEMA);   // rodar de novo não pode dar erro (atualização do schema)
   await db.exec(`
-    insert into acessos (email, nome, papel) values ('${POSTO}', 'Celular posto 1', 'posto'), ('${CHEFE}', 'Chefe', 'supervisor');
+    insert into acessos (email, nome, papel) values ('${POSTO}', 'Celular posto 1', 'posto'), ('${CHEFE}', 'Chefe', 'supervisor'), ('${DONO}', 'Dono', 'administrador');
     insert into frentistas (nome) values ('Ana Ribeiro'), ('Carlos Mendes');
     insert into tanques values ('TQ01', 30000, 12000);
     insert into bombas values (1, 'TQ01', 7071046, true);
@@ -175,4 +175,43 @@ test('supervisor cadastra: normaliza placa, valida CPF e registra no histórico 
   assert.equal(a.conta, CHEFE);
   assert.equal(a.detalhes.depois.cpf, '***35');
   assert.equal(a.detalhes.depois.nome, 'MARIA SOUZA');
+});
+
+// ---------- Administrador ----------
+test('administrador pode tudo que o supervisor pode', async () => {
+  assert.equal(await rpc(DONO, 'meu_papel'), 'administrador');
+  assert.ok((await como(DONO, 'select * from veiculos')).length > 0);
+  assert.ok(Array.isArray(await rpc(DONO, 'linhas_lote', { p_lote: 1 })));
+});
+
+test('supervisor não exclui, não desativa, não rebaixa e não cria administrador', async () => {
+  await assert.rejects(como(CHEFE, `delete from acessos where email = '${DONO}'`), /Somente um administrador/);
+  await assert.rejects(como(CHEFE, `update acessos set ativo = false where email = '${DONO}'`), /Somente um administrador/);
+  await assert.rejects(como(CHEFE, `update acessos set papel = 'supervisor' where email = '${DONO}'`), /Somente um administrador/);
+  await assert.rejects(como(CHEFE, "insert into acessos (email, nome, papel) values ('outro@empresa.com', 'Outro', 'administrador')"), /Somente um administrador/);
+  await assert.rejects(como(CHEFE, `update acessos set papel = 'administrador' where email = '${CHEFE}'`), /Somente um administrador/);
+  const dono = (await db.query(`select papel, ativo from acessos where email = '${DONO}'`)).rows[0];
+  assert.deepEqual(dono, { papel: 'administrador', ativo: true });
+});
+
+test('supervisor exclui acesso de celular, e fica na auditoria', async () => {
+  await como(CHEFE, "insert into acessos (email, nome, papel) values ('posto9@empresa.com', 'Celular 9', 'posto')");
+  const apagados = await como(CHEFE, "delete from acessos where email = 'posto9@empresa.com' returning email");
+  assert.equal(apagados.length, 1);
+  const a = (await db.query("select conta from auditoria where acao = 'cadastro.acessos.delete' and entidade_id = 'posto9@empresa.com'")).rows;
+  assert.equal(a[0].conta, CHEFE);
+});
+
+test('o único administrador ativo não pode sair, nem por conta própria', async () => {
+  await assert.rejects(como(DONO, `update acessos set ativo = false where email = '${DONO}'`), /único administrador/);
+  await assert.rejects(como(DONO, `delete from acessos where email = '${DONO}'`), /único administrador/);
+  await assert.rejects(como(DONO, `update acessos set papel = 'supervisor' where email = '${DONO}'`), /único administrador/);
+});
+
+test('com dois administradores, um pode remover o outro; o dono do projeto (SQL Editor) sempre pode', async () => {
+  await como(DONO, "insert into acessos (email, nome, papel) values ('socio@empresa.com', 'Sócio', 'administrador')");
+  assert.equal((await como(DONO, "update acessos set ativo = false where email = 'socio@empresa.com' returning email")).length, 1);
+  await como(DONO, "delete from acessos where email = 'socio@empresa.com'");
+  await db.exec(`update acessos set ativo = false where email = '${DONO}'`);   // SQL Editor: sem login
+  await db.exec(`update acessos set ativo = true where email = '${DONO}'`);
 });

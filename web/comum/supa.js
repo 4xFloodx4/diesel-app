@@ -24,6 +24,8 @@ function traduzir(error) {
   if (/Failed to fetch|NetworkError|Network request failed|Load failed|fetch failed/i.test(msg) || !navigator.onLine) {
     return new ErroApi('Sem conexão com a internet.', true);
   }
+  // Regras de proteção (ex.: administrador) usam o mesmo código 42501, mas a mensagem é para mostrar ao usuário
+  if (/Somente um administrador|único administrador/.test(msg)) return new ErroApi(msg);
   if (error?.code === '42501' || /Acesso negado|permission denied/i.test(msg)) {
     return new ErroApi('Esta conta não tem acesso. Peça ao supervisor para liberar.', false, true);
   }
