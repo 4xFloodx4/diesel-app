@@ -213,3 +213,24 @@ textarea { min-height: 70px; resize: vertical; }
 @media (max-width: 760px) { .faixa[data-colunas="3"] { grid-template-columns: minmax(0, 1fr); } .faixa[data-colunas="3"] > div { border-left: 0 !important; border-top: 1px solid var(--risco); } .faixa[data-colunas="3"] > div:first-child { border-top: 0; } }
 @media (max-width: 760px) { .app { background: none; } }
 @media (max-width: 760px) { .lado[inert] { box-shadow: none; } }
+
+/* Exportar: cartão do turno (passos, números e ações) e lista de consultas */
+.turno-card > header h2::first-letter { text-transform: uppercase; }
+.turno-card .passos { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.turno-card .passos div { font-size: 12.5px; border-radius: 6px; padding: 7px 9px; background: var(--placa-2); color: var(--tinta-3); }
+.turno-card .passos div.feito { background: var(--ok-fundo); color: var(--ok); }
+.turno-card .passos div.agora { background: var(--azul-fundo); color: var(--azul); font-weight: 500; }
+.turno-card .numeros { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 12.5px; color: var(--tinta-2); }
+.turno-card .numeros b { display: block; font: 500 18px var(--f-num); color: var(--marinho); }
+.turno-card .numeros .precisa b { color: var(--alerta); }
+.turno-card a.btn { display: inline-flex; align-items: center; text-decoration: none; }
+.erros-kmm summary { cursor: pointer; color: var(--azul); font-weight: 500; font-size: 13.5px; }
+.erros-kmm[open] summary { margin-bottom: 8px; }
+.lista-exp { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.lista-exp > div { border: 1px solid var(--risco); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; min-width: 0; }
+.lista-exp b { font-weight: 500; font-size: 14.5px; }
+.lista-exp span { font-size: 13px; color: var(--tinta-2); }
+.lista-exp .btn { margin-top: auto; }
+.corpo > .filtros { padding: 0 0 14px; }
+a.lk { color: var(--azul); font-weight: 500; text-decoration: none; }
+@media (max-width: 700px) { .turno-card .passos { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }

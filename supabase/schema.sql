@@ -243,6 +243,21 @@ create table if not exists lotes (
   fechado_por text
 );
 
+-- Fechamento do turno para o KMM: cada lote é de um dia que o frentista fechou no app. Entram os prontos daquele dia
+-- e os de dias anteriores que ficaram pendentes e foram resolvidos depois (vão marcados como "de outro dia").
+alter table lotes add column if not exists dia date;
+create index if not exists ix_lotes_dia on lotes (dia);
+
+-- Relatório diário em PDF (modelo da Ritmo), gerado no Google Drive pelo Apps Script depois do fechamento do turno.
+-- fechamento_em: a hora do fechamento que o relatório mostra; turno reaberto e fechado de novo faz o PDF ser refeito.
+create table if not exists relatorios_diarios (
+  data           date primary key,
+  drive_id       text not null,
+  drive_url      text not null,
+  fechamento_em  timestamptz not null,
+  gerado_em      timestamptz not null default now()
+);
+
 -- id = Nº requisição no KMM
 create table if not exists abastecimentos (
   id                   bigint generated always as identity primary key,
@@ -1198,7 +1213,7 @@ end $$;
 create or replace function marcar_erro_kmm(p_id bigint, p_mensagem text) returns void
 language plpgsql security definer set search_path = public as $$
 begin
-  perform exigir(array['supervisor']);
+  perform exigir(array['administrador']);
   if length(trim(coalesce(p_mensagem, ''))) < 3 then raise exception 'Escreva a mensagem do KMM.' using errcode = '22023'; end if;
   update abastecimentos set status = 'Erro', erro_kmm = left(p_mensagem, 1000), atualizado_em = now()
    where id = p_id and status = 'Em lote';
@@ -1211,48 +1226,58 @@ create or replace function linhas_lote(p_lote bigint) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 begin
   perform exigir(array['supervisor']);
-  return coalesce((select jsonb_agg(jsonb_build_object('requisicao', id, 'data_hora', data_hora, 'placa', placa, 'cpf', cpf,
-                   'km', km, 'litros', litros, 'bomba', bomba, 'preco', preco_litro, 'valor_total', valor_total) order by data_hora, id)
-                   from abastecimentos where lote_id = p_lote), '[]');
+  return coalesce((select jsonb_agg(jsonb_build_object('requisicao', a.id, 'data_hora', a.data_hora, 'placa', a.placa, 'cpf', a.cpf,
+                   'motorista', a.motorista, 'km', a.km, 'litros', a.litros, 'bomba', a.bomba, 'preco', a.preco_litro, 'valor_total', a.valor_total,
+                   'de_outro_dia', l.dia is not null and a.data_hora::date < l.dia) order by a.data_hora, a.id)
+                   from abastecimentos a join lotes l on l.id = a.lote_id where a.lote_id = p_lote), '[]');
 end $$;
 
-create or replace function gerar_lote() returns jsonb
+-- Fechamento do turno de p_dia para o KMM (administrador): os prontos até aquele dia viram a planilha do importador.
+drop function if exists gerar_lote();
+create or replace function gerar_lote(p_dia date) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare v_id bigint; v_qtd integer; v_lt numeric; v_sem_cpf text;
 begin
-  perform exigir(array['supervisor']);
+  perform exigir(array['administrador']);
+  if p_dia is null or not exists (select 1 from fechamentos where data = p_dia) then
+    raise exception 'O turno de % ainda não foi fechado no app.', coalesce(to_char(p_dia, 'DD/MM'), '(sem data)') using errcode = '22023';
+  end if;
   -- Os totais saem das próprias linhas que entraram no lote (um lançamento que chegue no meio não fica de fora da conta).
   -- Qualquer erro abaixo desfaz tudo, inclusive o lote criado.
-  insert into lotes (criado_por, quantidade, litros, situacao) values (meu_email(), 0, 0, 'Gerado') returning id into v_id;
+  insert into lotes (criado_por, quantidade, litros, situacao, dia) values (meu_email(), 0, 0, 'Gerado', p_dia) returning id into v_id;
   with u as (
-    update abastecimentos set status = 'Em lote', lote_id = v_id, atualizado_em = now() where status = 'Pronto'
+    update abastecimentos set status = 'Em lote', lote_id = v_id, atualizado_em = now()
+     where status = 'Pronto' and data_hora::date <= p_dia
     returning id, litros, cpf
   )
   select count(*), coalesce(sum(litros), 0), string_agg(id::text, ', ' order by id) filter (where cpf is null or length(cpf) <> 11)
     into v_qtd, v_lt, v_sem_cpf from u;
-  if v_qtd = 0 then raise exception 'Não há abastecimentos prontos para o KMM.' using errcode = '22023'; end if;
+  if v_qtd = 0 then raise exception 'Nada novo para lançar no KMM até o turno de %.', to_char(p_dia, 'DD/MM') using errcode = '22023'; end if;
   if v_sem_cpf is not null then
     raise exception 'Registros sem CPF de motorista: %. Corrija o cadastro e revise.', v_sem_cpf using errcode = '22023';
   end if;
   update lotes set quantidade = v_qtd, litros = v_lt where id = v_id;
-  perform auditar('lote.gerado', 'lote', v_id::text, jsonb_build_object('quantidade', v_qtd, 'litros', v_lt));
-  return jsonb_build_object('id', v_id, 'quantidade', v_qtd, 'litros', v_lt, 'linhas', linhas_lote(v_id));
+  perform auditar('lote.gerado', 'lote', v_id::text, jsonb_build_object('quantidade', v_qtd, 'litros', v_lt, 'dia', p_dia));
+  return jsonb_build_object('id', v_id, 'dia', p_dia, 'quantidade', v_qtd, 'litros', v_lt, 'linhas', linhas_lote(v_id));
 end $$;
 
+-- Confirmar: o analista lançou no KMM. Desfazer: não lançou (ou lançou errado e vai refazer); volta tudo para Pronto.
 create or replace function fechar_lote(p_lote bigint, p_acao text) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare v_lote lotes; v_n integer;
 begin
-  perform exigir(array['supervisor']);
+  perform exigir(array['administrador']);
   select * into v_lote from lotes where id = p_lote for update;
   if v_lote.id is null then raise exception 'Lote não encontrado.' using errcode = 'P0002'; end if;
-  if v_lote.situacao <> 'Gerado' then raise exception 'Lote já está %.', lower(v_lote.situacao) using errcode = '22023'; end if;
+  if v_lote.situacao = 'Desfeito' or (p_acao = 'confirmar' and v_lote.situacao <> 'Gerado') then
+    raise exception 'Este fechamento já está %.', case v_lote.situacao when 'Confirmado' then 'lançado no KMM' else lower(v_lote.situacao) end using errcode = '22023';
+  end if;
   if p_acao = 'confirmar' then
     update abastecimentos set status = 'Lançado', atualizado_em = now() where lote_id = p_lote and status = 'Em lote';
     get diagnostics v_n = row_count;
     update lotes set situacao = 'Confirmado', fechado_em = now(), fechado_por = meu_email() where id = p_lote;
   elsif p_acao = 'desfazer' then
-    update abastecimentos set status = 'Pronto', lote_id = null, atualizado_em = now() where lote_id = p_lote and status = 'Em lote';
+    update abastecimentos set status = 'Pronto', lote_id = null, atualizado_em = now() where lote_id = p_lote and status in ('Em lote', 'Lançado');
     get diagnostics v_n = row_count;
     update lotes set situacao = 'Desfeito', fechado_em = now(), fechado_por = meu_email() where id = p_lote;
   else
@@ -1260,6 +1285,71 @@ begin
   end if;
   perform auditar('lote.' || p_acao, 'lote', p_lote::text, jsonb_build_object('registros', v_n));
   return jsonb_build_object('id', p_lote, 'situacao', case p_acao when 'confirmar' then 'Confirmado' else 'Desfeito' end, 'registros', v_n);
+end $$;
+
+-- Exportar › Fechamento do turno: um cartão por dia fechado no app, com o que entrou, o que está pendente,
+-- os fechamentos para o KMM daquele dia e o relatório diário em PDF.
+create or replace function turnos_kmm(p_limite integer default 30) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform exigir(array['supervisor']);
+  return coalesce((select jsonb_agg(t order by t.dia desc) from (
+    select d.dia,
+           (select max(f.criado_em) from fechamentos f where f.data = d.dia) as fechado_em,
+           (select fr.nome from fechamentos f join frentistas fr on fr.id = f.frentista_id where f.data = d.dia order by f.id desc limit 1) as fechado_por,
+           (select count(*) from abastecimentos a where a.data_hora::date = d.dia and a.status <> 'Cancelado') as abastecimentos,
+           (select coalesce(sum(a.litros), 0) from abastecimentos a where a.data_hora::date = d.dia and a.status <> 'Cancelado') as litros,
+           (select count(*) from abastecimentos a where a.data_hora::date = d.dia and a.status in ('Aguardando autorização', 'Exceção', 'Erro')) as pendentes,
+           (select count(*) from abastecimentos a where a.data_hora::date = d.dia and a.status = 'Pronto') as prontos,
+           (select count(*) from abastecimentos a where a.data_hora::date < d.dia and a.status = 'Pronto') as prontos_de_antes,
+           (select count(*) from chegadas c where c.data_hora::date = d.dia and not c.cancelada) as chegadas,
+           coalesce((select jsonb_agg(jsonb_build_object('id', l.id, 'situacao', l.situacao, 'quantidade', l.quantidade, 'litros', l.litros,
+                       'criado_em', l.criado_em, 'criado_por', coalesce((select nome from acessos where email = l.criado_por), l.criado_por),
+                       'fechado_em', l.fechado_em, 'fechado_por', coalesce((select nome from acessos where email = l.fechado_por), l.fechado_por)) order by l.id)
+                     from lotes l where l.dia = d.dia), '[]') as lotes,
+           (select jsonb_build_object('drive_url', r.drive_url, 'gerado_em', r.gerado_em,
+                                      'atualizado', r.fechamento_em >= (select max(f.criado_em) from fechamentos f where f.data = d.dia))
+              from relatorios_diarios r where r.data = d.dia) as relatorio
+      from (select distinct data as dia from fechamentos order by data desc limit greatest(1, least(coalesce(p_limite, 30), 120))) d) t), '[]');
+end $$;
+
+-- Dados do relatório diário (modelo "RELATÓRIO DIÁRIO DE ABASTECIMENTO - VERSÃO ONLINE"): cabeçalho, abastecimentos e chegadas
+create or replace function relatorio_do_dia(p_dia date) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'data', to_char(p_dia, 'YYYY-MM-DD'),
+    'fechamento_em', (select max(criado_em) from fechamentos where data = p_dia),
+    'hora', (select to_char(abertura, 'HH24:MI') from configuracoes where id = 1) || ' às '
+            || coalesce((select to_char(max(criado_em) at time zone 'America/Sao_Paulo', 'HH24:MI') from fechamentos where data = p_dia), ''),
+    'tanques', coalesce((select jsonb_agg(jsonb_build_object('tanque', tanque, 'saldo_inicial', saldo_inicial) order by tanque)
+                         from fechamentos where data = p_dia), '[]'),
+    'bombas', coalesce((select jsonb_agg(jsonb_build_object('bomba', numero, 'encerrante_inicial', encerrante_ate(numero, p_dia::timestamp)) order by numero)
+                        from bombas where ativa), '[]'),
+    'abastecimentos', coalesce((select jsonb_agg(jsonb_build_object('placa', placa, 'motorista', motorista, 'hora', to_char(data_hora, 'HH24:MI'),
+                                  'km', km, 'litros', litros, 'encerrante', encerrante, 'bomba', bomba) order by data_hora, id)
+                                from abastecimentos where data_hora::date = p_dia and status <> 'Cancelado'), '[]'),
+    'chegadas', coalesce((select jsonb_agg(jsonb_build_object('data', to_char(data_hora, 'DD/MM/YYYY'), 'hora', to_char(data_hora, 'HH24:MI'),
+                            'litros', litros, 'nf', nf, 'valor_total', valor_total, 'regua_antes', regua_antes, 'regua_depois', regua_depois,
+                            'placa_caminhao', placa_caminhao, 'placa_carreta', placa_carreta, 'motorista', motorista, 'cpf', cpf) order by data_hora)
+                          from chegadas where data_hora::date = p_dia and not cancelada), '[]'))
+$$;
+
+-- Apps Script: dias fechados (até 60 dias atrás) sem relatório, ou com relatório de um fechamento anterior (turno reaberto)
+create or replace function relatorios_para_drive() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(relatorio_do_dia(d.data) order by d.data), '[]')
+    from (select data, max(criado_em) as fech from fechamentos where data >= hoje() - 60 group by data) d
+    left join relatorios_diarios r on r.data = d.data
+   where r.data is null or r.fechamento_em < d.fech
+$$;
+
+create or replace function relatorio_no_drive(p_data date, p_drive_id text, p_drive_url text, p_fechamento_em timestamptz) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if coalesce(p_drive_id, '') !~ '^[A-Za-z0-9_-]{10,200}$' then raise exception 'ID do Drive inválido.' using errcode = '22023'; end if;
+  if coalesce(p_drive_url, '') !~ '^https://drive\.google\.com/' then raise exception 'Link do Drive inválido.' using errcode = '22023'; end if;
+  insert into relatorios_diarios (data, drive_id, drive_url, fechamento_em) values (p_data, p_drive_id, left(p_drive_url, 500), p_fechamento_em)
+  on conflict (data) do update set drive_id = excluded.drive_id, drive_url = excluded.drive_url, fechamento_em = excluded.fechamento_em, gerado_em = now();
 end $$;
 
 -- Turno fechado sem querer: supervisor ou administrador reabre (só o último fechado, para não bagunçar o saldo dos
@@ -1345,7 +1435,8 @@ do $$
 declare t text;
 begin
   foreach t in array array['acessos', 'frentistas', 'frentistas_pin', 'sessoes_frentista', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques',
-                           'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'auditoria', 'configuracoes'] loop
+                           'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'auditoria', 'configuracoes',
+                           'relatorios_diarios'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon', t);
     execute format('drop policy if exists supervisor_le on %I', t);
@@ -1353,7 +1444,7 @@ begin
   end loop;
   -- Leitura pelo painel (PINs, sessões e auditoria têm regra própria)
   foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'bombas',
-                           'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'configuracoes'] loop
+                           'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'configuracoes', 'relatorios_diarios'] loop
     execute format('create policy supervisor_le on %I for select to authenticated using (sou_gestor())', t);
   end loop;
   -- Cadastros: supervisor e administrador editam direto (com histórico automático pelos gatilhos)
@@ -1412,7 +1503,7 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frent
   corrigir_veiculo_app(text, text, numeric, integer), definir_preco_diesel(text, numeric, text),
   definir_pin(bigint, text), decidir_autorizacao(bigint, boolean, text), importar_vinculos(jsonb),
   decidir_abastecimento(bigint, text, text, jsonb), marcar_erro_kmm(bigint, text),
-  gerar_lote(), linhas_lote(bigint), fechar_lote(bigint, text), reabrir_turno(date, text), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)
+  gerar_lote(date), linhas_lote(bigint), fechar_lote(bigint, text), reabrir_turno(date, text), turnos_kmm(integer), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)
   to authenticated;
 -- As políticas RLS, as do Storage e os gatilhos chamam estas; precisam estar liberadas para quem está logado
 grant execute on function exigir(text[]), sou_gestor(), nivel_papel(text), fora_do_turno(timestamp), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text),
@@ -1420,4 +1511,5 @@ grant execute on function exigir(text[]), sou_gestor(), nivel_papel(text), fora_
   bloquear_alteracao(), proteger_acessos(), proteger_foto()
   to authenticated;
 -- Só o Apps Script do Google Drive (chave service_role)
-grant execute on function fotos_para_drive(integer), foto_no_drive(text, text, text, boolean) to service_role;
+grant execute on function fotos_para_drive(integer), foto_no_drive(text, text, text, boolean), relatorios_para_drive(),
+  relatorio_no_drive(date, text, text, timestamptz) to service_role;

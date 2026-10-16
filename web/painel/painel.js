@@ -120,7 +120,7 @@ const LOGO = '<img class="logo-ritmo" src="../comum/logo-ritmo.jpg" alt="Ritmo L
 const IC = {
   grade: '<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/>',
   lista: '<path d="M2 4h12M2 8h8M2 12h5"/>', doc: '<path d="M3 2h10v12H3zM6 5h4M6 8h4M6 11h2"/>', gota: '<path d="M8 2s4 4.6 4 7.5a4 4 0 0 1-8 0C4 6.6 8 2 8 2z"/>',
-  kmm: '<path d="M3 3h10v3H3zM3 8h10v5H3z"/>', pessoa: '<circle cx="8" cy="5.5" r="2.5"/><path d="M3 14c.6-2.6 2.6-4 5-4s4.4 1.4 5 4"/>',
+  kmm: '<path d="M3 3h10v3H3zM3 8h10v5H3z"/>', baixar: '<path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/>', pessoa: '<circle cx="8" cy="5.5" r="2.5"/><path d="M3 14c.6-2.6 2.6-4 5-4s4.4 1.4 5 4"/>',
   caminhao: '<path d="M1.5 10.5V6h8v4.5M9.5 7.5h3l2 2v1h-5"/><circle cx="4.5" cy="11.5" r="1.5"/><circle cx="12" cy="11.5" r="1.5"/>',
   cadeado: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>', historico: '<path d="M8 3v5l3 2"/><circle cx="8" cy="8" r="6"/>',
   turno: '<path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2"/><circle cx="8" cy="8" r="3"/>',
@@ -129,7 +129,7 @@ const IC = {
 // [id, rótulo, ícone, quem vê: nada = todos do painel, 'admin' = administrador para cima, 'dev' = só desenvolvedor]
 const MENU = [
   ['Operação', [['resumo', 'Visão do dia', 'grade'], ['decisoes', 'Decisões', 'lista'], ['abastecimentos', 'Abastecimentos', 'doc'], ['tanques', 'Tanques e fechamentos', 'gota']]],
-  ['KMM', [['lotes', 'Lotes', 'kmm']]],
+  ['Exportar', [['turnos', 'Fechamento do turno', 'kmm'], ['relatorios', 'Relatório diário', 'doc'], ['consultas', 'Consultas', 'baixar']]],
   ['Cadastros', [['frentistas', 'Frentistas', 'pessoa'], ['veiculos', 'Veículos e motoristas', 'caminhao']]],
   ['Sistema', [['acessos', 'Acessos', 'cadeado', 'admin'], ['auditoria', 'Histórico', 'historico'], ['turno', 'Horário do turno', 'turno', 'admin']]],
   ['Ajuda', [['guia', 'Guia de uso', 'ajuda']]],
@@ -159,7 +159,7 @@ async function atualizarContadores() {
   if (!r) return;
   const dec = STATUS_DECISAO.reduce((s, k) => s + (r[k] || 0), 0);
   const marcar = (id, n, vermelho) => { const el = document.querySelector(`[data-qtd="${id}"]`); if (!el) return; el.hidden = !n; el.textContent = n; el.classList.toggle('vermelho', !!vermelho); };
-  marcar('decisoes', dec, true); marcar('lotes', r.Pronto || 0);
+  marcar('decisoes', dec, true); marcar('turnos', r.Pronto || 0);
   $('badge-menu').hidden = !dec; $('badge-menu').textContent = dec;
 }
 
@@ -277,7 +277,7 @@ TELAS.resumo = async () => {
         .gte('data_hora', hojeISO()).order('data_hora', { ascending: false }).limit(2000)),
       consulta(supabase.from('abastecimentos').select('*, frentistas(nome)').in('status', STATUS_DECISAO).order('data_hora', { ascending: false }).limit(200)),
       consulta(supabase.from('abastecimentos').select('litros').eq('status', 'Pronto').limit(10000)),
-      consulta(supabase.from('lotes').select('*').order('id', { ascending: false }).limit(1)),
+      consulta(supabase.from('lotes').select('*').eq('situacao', 'Confirmado').order('id', { ascending: false }).limit(1)),
       consulta(supabase.from('bombas').select('numero').eq('ativa', true).order('numero')),
       consulta(supabase.from('afericoes').select('bomba, data_hora').order('data_hora', { ascending: false }).limit(500)),
       consulta(supabase.from('precos_diesel').select('preco, origem, criado_em, frentistas(nome)').order('id', { ascending: false }).limit(1)),
@@ -293,12 +293,12 @@ TELAS.resumo = async () => {
   const l = r.ultLote;
   const validos = r.abHoje.filter(a => a.status !== 'Cancelado');
   return `${cabeca('Visão do dia', `${new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })} · atualizado às ${new Date().toTimeString().slice(0, 5)}`,
-      `<button class="btn small ghost" type="button" data-acao="recarregar">Atualizar</button>${nativo ? '' : '<button class="btn small" type="button" data-ir="lotes">Gerar lote do KMM</button>'}`)}
+      `<button class="btn small ghost" type="button" data-acao="recarregar">Atualizar</button>${nativo ? '' : '<button class="btn small" type="button" data-ir="turnos">Fechamento do turno</button>'}`)}
     <section class="faixa" aria-label="Situação de hoje">
       <div><small>Saída hoje</small><b class="num">${nf(saida, 0)} L</b><em>${validos.length} abastecimento(s)</em></div>
       <div class="${r.pend.length ? 'precisa' : ''}"><small>Precisa de você</small><b class="num">${r.pend.length}</b><em>${nAut} autorização(ões) · ${r.pend.length - nAut} exceção(ões)</em></div>
-      <div><small>Prontos para o KMM</small><b class="num">${r.prontos.length}</b><em>${nf(r.prontos.reduce((s, x) => s + Number(x.litros), 0), 0)} L no próximo lote</em></div>
-      <div><small>Último lote</small><b class="num">${l ? `lote ${esc(l.id)}` : '—'}</b><em>${l ? `${esc(l.situacao.toLowerCase())} · ${quandoLocal(l.fechado_em || l.criado_em)}` : 'nenhum lote ainda'}</em></div>
+      <div><small>Prontos para o KMM</small><b class="num">${r.prontos.length}</b><em>${nf(r.prontos.reduce((s, x) => s + Number(x.litros), 0), 0)} L no próximo fechamento</em></div>
+      <div><small>Último lançado no KMM</small><b class="num">${l?.dia ? dataBR(l.dia).slice(0, 5) : l ? `nº ${esc(l.id)}` : '—'}</b><em>${l ? `${l.situacao === 'Confirmado' ? 'lançado' : esc(l.situacao.toLowerCase())} · ${quandoLocal(l.fechado_em || l.criado_em)}` : 'nenhum ainda'}</em></div>
       <div><small>Fechamento</small><b class="num">${fechado ? 'fechado' : 'aberto'}</b><em>turno ${esc(est.turno.abertura)}–${esc(est.turno.fechamento)}</em></div>
     </section>
     ${r.bombas.length ? `<section class="painel"><header><h2>Bombas e preço do diesel</h2><span>aferição 1 vez por semana · <button class="link" type="button" data-ir="tanques">ver aferições</button></span></header>
@@ -404,8 +404,7 @@ async function decidir(f, decisao) {
 }
 
 // ---------- Abastecimentos ----------
-function consultaAbastecimentos() {
-  const fl = est.filtros;
+function consultaAbastecimentos(fl = est.filtros) {
   let q = supabase.from('abastecimentos').select('*, frentistas(nome)').order('data_hora', { ascending: false });
   if (fl.status) q = q.eq('status', fl.status);
   if (fl.de) q = q.gte('data_hora', fl.de);
@@ -437,26 +436,29 @@ TELAS.abastecimentos = async () => {
     </section>`;
 };
 
-async function exportarExcel() {
+// Exportar abastecimentos: com os filtros da tela Abastecimentos, ou com o período da tela Consultas (de/até)
+async function exportarExcel(de, ate) {
   const todos = [];
+  const filtros = de ? { de, ate, status: '', placa: '' } : est.filtros;
   if (demo()) todos.push(...filtrarDemo(dadosDemo().abastecimentos));
   else for (let i = 0; ; i += 1000) {
-    const parte = await chamar(() => consulta(consultaAbastecimentos().range(i, i + 999)));
+    const parte = await chamar(() => consulta(consultaAbastecimentos(filtros).range(i, i + 999)));
     if (!parte) return;
     todos.push(...parte);
     if (parte.length < 1000) break;
   }
+  const comprovante = demo() ? {} : await chamar(() => linksDoDrive('abastecimento', todos.map(r => r.id))) || {};
   const linhas = [['ID (requisição KMM)', 'Data e hora', 'Placa', 'Motorista', 'CPF', 'KM', 'Litros', 'Preço do litro', 'Valor total', 'Encerrante anterior', 'Encerrante',
     'Bomba', 'Tanque', 'Status', 'Problemas', 'Desconto do motorista', 'Justificativa sem desconto', 'Fora do horário', 'Justificativa fora do horário',
-    'Autorizado por', 'Obs. frentista', 'Obs. supervisor', 'Frentista', 'Conta do celular', 'Recebido em', 'Lote', 'Erro KMM'],
+    'Autorizado por', 'Obs. frentista', 'Obs. supervisor', 'Frentista', 'Conta do celular', 'Recebido em', 'Fechamento do turno', 'Erro KMM', 'Comprovante'],
     ...todos.reverse().map(r => [r.id, dataHora(r.data_hora), r.placa, r.motorista, r.cpf, r.km, Number(r.litros),
       r.preco_litro == null ? '' : Number(r.preco_litro), r.valor_total == null ? '' : Number(r.valor_total), Number(r.encerrante_anterior),
       Number(r.encerrante), r.bomba, r.tanque, r.status, (r.problemas || []).join('; '), r.desconto_confirmado ? 'Sim' : 'Não',
       r.justificativa_desconto, r.fora_horario ? 'Sim' : 'Não', r.justificativa_horario, r.autorizado_por, r.obs_frentista, r.obs_supervisor,
-      r.frentistas?.nome, r.conta, quandoLocal(r.recebido_em), r.lote_id, r.erro_kmm])];
+      r.frentistas?.nome, r.conta, quandoLocal(r.recebido_em), r.lote_id, r.erro_kmm, comprovante[r.id] || ''])];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(linhas), 'Abastecimentos');
-  XLSX.writeFile(wb, `abastecimentos_${hojeISO()}.xlsx`);
+  XLSX.writeFile(wb, de ? `abastecimentos_${de}_a_${ate}.xlsx` : `abastecimentos_${hojeISO()}.xlsx`);
 }
 
 // ---------- Fotos ----------
@@ -596,43 +598,175 @@ TELAS.tanques = async () => {
 };
 
 // ---------- Lotes do KMM ----------
-function baixarLote(id, linhas) { XLSX.writeFile(planilhaKMM(XLSX, linhas), `kmm_lote_${id}.xlsx`, { bookType: 'xlsx' }); }
+function baixarLote(id, linhas, dia) { XLSX.writeFile(planilhaKMM(XLSX, linhas), dia ? `kmm_turno_${dia}_n${id}.xlsx` : `kmm_lote_${id}.xlsx`, { bookType: 'xlsx' }); }
 
-TELAS.lotes = async () => {
+// ---------- Exportar › Fechamento do turno (para o KMM) ----------
+// Um cartão por dia fechado no app. O administrador gera a planilha do importador do KMM, confere, lança e marca como
+// lançado. O supervisor só baixa. Abastecimento resolvido depois do fechamento entra no próximo, marcado "de outro dia".
+const diaSemana = iso => new Date(`${iso}T12:00:00`).toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: '2-digit' });
+const nomeCurto = s => esc(String(s || '').split('@')[0]);
+function situacaoTurno(t) {
+  const gerado = t.lotes.find(l => l.situacao === 'Gerado'), lancado = [...t.lotes].reverse().find(l => l.situacao === 'Confirmado');
+  if (gerado) return ['pend', 'Esperando o analista'];
+  if (lancado && !t.prontos) return ['ok', `Lançado no KMM · ${nomeCurto(lancado.fechado_por)}, ${quandoLocal(lancado.fechado_em)}`];
+  if (t.prontos || t.prontos_de_antes) return ['diesel', 'Pronto para exportar'];
+  return ['neutro', t.abastecimentos ? 'Nada pronto para exportar' : 'Sem abastecimentos'];
+}
+function cartaoTurno(t, emLote) {
+  const [classe, texto] = situacaoTurno(t);
+  const gerados = t.lotes.filter(l => l.situacao === 'Gerado'), confirmados = t.lotes.filter(l => l.situacao === 'Confirmado');
+  const rel = t.relatorio, pode = souAdmin() && !nativo;
+  const passo = (feito, agora, txt) => `<div class="${feito ? 'feito' : agora ? 'agora' : ''}">${feito ? '✓ ' : ''}${txt}</div>`;
+  const vaiJunto = t.prontos + t.prontos_de_antes;
+  return `<section class="painel turno-card"><header><h2>${esc(diaSemana(t.dia))}</h2><span class="chip ${classe}">${texto}</span></header>
+    <div class="corpo">
+      <div class="passos">${passo(true, false, `Turno fechado ${quandoLocal(t.fechado_em).slice(6)}${t.fechado_por ? ` · ${esc(t.fechado_por)}` : ''}`)}
+        ${passo(rel?.atualizado, false, rel ? (rel.atualizado ? 'Relatório no Drive' : 'Relatório sendo refeito') : 'Relatório sendo gerado')}
+        ${passo(confirmados.length && !gerados.length && !t.prontos, gerados.length || vaiJunto, 'Conferir e lançar no KMM')}
+        ${passo(confirmados.length && !gerados.length && !t.prontos, false, 'Lançado no KMM')}</div>
+      <div class="numeros"><div><b class="num">${esc(t.abastecimentos)}</b>abastecimentos</div><div><b class="num">${nf(t.litros, 0)} L</b>saída</div>
+        <div><b class="num">${esc(t.chegadas)}</b>chegada(s)</div>
+        ${t.pendentes ? `<div class="precisa"><b class="num">${esc(t.pendentes)}</b><button class="link" type="button" data-ir="decisoes">com o supervisor</button></div>` : ''}
+        ${t.prontos_de_antes ? `<div><b class="num">${esc(t.prontos_de_antes)}</b>de dias anteriores</div>` : ''}</div>
+      <div class="acoes">
+        ${pode && vaiJunto && !gerados.length ? `<button class="btn small" type="button" data-acao="gerar" data-dia="${esc(t.dia)}">Gerar planilha do KMM (${vaiJunto})</button>` : ''}
+        ${[...gerados, ...confirmados].map(l => `<button class="btn small ghost" type="button" data-acao="baixar" data-lote="${esc(l.id)}" data-dia="${esc(t.dia)}">Planilha do KMM${t.lotes.length > 1 ? ` nº ${esc(l.id)}` : ''}</button>
+          <button class="btn small ghost" type="button" data-acao="conferencia" data-lote="${esc(l.id)}" data-dia="${esc(t.dia)}">Lista para conferência</button>`).join('')}
+        ${rel ? `<a class="btn small ghost" href="${esc(rel.drive_url)}" target="_blank" rel="noopener noreferrer">Relatório diário (PDF)</a>` : ''}
+        ${pode ? gerados.map(l => `<button class="btn small" type="button" data-acao="confirmar" data-lote="${esc(l.id)}">Marcar como lançado no KMM</button>
+          <button class="btn small ghost" type="button" data-acao="desfazer" data-lote="${esc(l.id)}">Desfazer (não lancei)</button>`).join('') : ''}
+        ${pode ? confirmados.map(l => `<button class="btn small ghost" type="button" data-acao="desfazer" data-lote="${esc(l.id)}">Desfazer lançamento nº ${esc(l.id)}</button>`).join('') : ''}
+      </div>
+      ${gerados.length && pode ? `<details class="erros-kmm"><summary>O KMM recusou alguma linha?</summary>
+        <p class="hint">Marque o erro na linha antes de marcar como lançado. Ela volta para Decisões e entra no próximo fechamento depois de corrigida.</p>
+        <div class="tabela"><table><thead><tr><th>Nº</th><th>Data</th><th>Veículo</th><th class="n">Litros</th><th>Erro do KMM</th></tr></thead><tbody>
+        ${emLote.filter(x => gerados.some(l => l.id === x.lote_id)).map(x => `<tr><td>#${esc(x.id)}</td><td>${dataHora(x.data_hora)}${x.data_hora.slice(0, 10) < t.dia ? ' <span class="chip hora">de outro dia</span>' : ''}</td>
+          <td>${placa(x.placa)}<span class="sub">${esc(x.motorista)}</span></td><td class="n">${nf(x.litros)}</td>
+          <td><div class="inline"><input data-erro="${esc(x.id)}" placeholder="Mensagem do KMM" maxlength="1000" aria-label="Erro do KMM no #${esc(x.id)}"><button class="btn small ghost" type="button" data-acao="erro" data-id="${esc(x.id)}">Marcar erro</button></div></td></tr>`).join('')}
+        </tbody></table></div></details>` : ''}
+    </div></section>`;
+}
+const turnosDemo = d => d.fechamentos.map(f => ({ dia: f.data, fechado_em: `${f.data}T23:02:00`, fechado_por: f.frentistas?.nome, abastecimentos: 24, litros: 9870, pendentes: 0,
+  prontos: 0, prontos_de_antes: 0, chegadas: 0, relatorio: null, lotes: d.lotes.filter(l => l.situacao === 'Confirmado').map(l => ({ ...l, fechado_por: 'Administrador (demo)' })) }));
+
+TELAS.turnos = async () => {
   const r = await carregar(async () => ({
-    ls: await consulta(supabase.from('lotes').select('*').order('id', { ascending: false }).limit(100)),
-    prontos: await consulta(supabase.from('abastecimentos').select('id, litros').eq('status', 'Pronto').limit(10000)),
+    ts: await rpc('turnos_kmm', { p_limite: 30 }),
     emLote: await consulta(supabase.from('abastecimentos').select('id, data_hora, placa, motorista, litros, lote_id').eq('status', 'Em lote').order('data_hora')),
-  }), d => ({ ls: d.lotes, prontos: d.abastecimentos.filter(a => a.status === 'Pronto'), emLote: [] }));
+  }), d => ({ ts: turnosDemo(d), emLote: [] }));
   if (!r) return;
-  const abertos = r.ls.filter(l => l.situacao === 'Gerado');
-  const litrosProntos = r.prontos.reduce((s, x) => s + Number(x.litros), 0);
-  return `${cabeca('Lotes do KMM', 'Os abastecimentos prontos viram uma planilha para importar no KMM (Importação de abastecimento › Interno).',
-      nativo ? '' : `<button class="btn" type="button" data-acao="gerar" ${r.prontos.length ? '' : 'disabled'}>Gerar lote do KMM</button>`)}
-    ${nativo ? soComputador('No celular os lotes são só para consulta. Gerar, baixar, confirmar e marcar erros do KMM é feito no computador.') : ''}
-    <section class="faixa" aria-label="Situação dos lotes" data-colunas="3">
-      <div><small>Prontos para o próximo lote</small><b class="num">${r.prontos.length}</b><em>${nf(litrosProntos, 0)} L</em></div>
-      <div class="${abertos.length ? 'precisa' : ''}"><small>Aguardando confirmação</small><b class="num">${abertos.length}</b><em>lote(s) gerado(s) e não confirmado(s)</em></div>
-      <div><small>Último confirmado</small><b class="num">${(l => l ? `lote ${esc(l.id)}` : '—')(r.ls.find(l => l.situacao === 'Confirmado'))}</b><em>&nbsp;</em></div>
-    </section>
-    ${r.prontos.length === 1 && !nativo ? '<p class="hint">Com 1 registro só, o importador do KMM pode recusar o arquivo. Se der erro, espere ter mais um.</p>' : ''}
-    ${abertos.map(l => `<section class="painel"><header><h2>Lote ${esc(l.id)}: aguardando confirmação</h2><span>${esc(l.quantidade)} registro(s) · ${nf(l.litros)} L · gerado ${quandoLocal(l.criado_em)}</span></header>
-      ${nativo ? '' : `<div class="corpo"><div class="acoes">
-        <button class="btn small ghost" type="button" data-acao="baixar" data-lote="${esc(l.id)}">Baixar planilha</button>
-        <button class="btn small" type="button" data-acao="confirmar" data-lote="${esc(l.id)}">Confirmar: importado no KMM</button>
-        <button class="btn small ghost" type="button" data-acao="desfazer" data-lote="${esc(l.id)}">Desfazer (não importei)</button></div>
-        <p class="hint">Se o KMM recusou alguma linha, marque o erro nela antes de confirmar. Ela volta para Decisões.</p></div>`}
-      <div class="tabela"><table><thead><tr><th>Nº</th><th>Data</th><th>Veículo</th><th class="n">Litros</th>${nativo ? '' : '<th>Erro do KMM</th>'}</tr></thead><tbody>
-      ${r.emLote.filter(x => x.lote_id === l.id).map(x => `<tr><td class="n">#${esc(x.id)}</td><td>${dataHora(x.data_hora)}</td><td>${placa(x.placa)}<span class="sub">${esc(x.motorista)}</span></td><td class="n">${nf(x.litros)}</td>
-        ${nativo ? '' : `<td><div class="inline"><input data-erro="${esc(x.id)}" placeholder="Mensagem do KMM" maxlength="1000" aria-label="Erro do KMM no #${esc(x.id)}"><button class="btn small ghost" type="button" data-acao="erro" data-id="${esc(x.id)}">Marcar erro</button></div></td>`}</tr>`).join('')}
-      </tbody></table></div></section>`).join('')}
-    <section class="painel"><header><h2>Histórico</h2><span>últimos 100 lotes</span></header>
-      ${r.ls.length ? `<div class="tabela"><table><thead><tr><th class="n">Lote</th><th>Gerado</th><th class="n">Registros</th><th class="n">Litros</th><th>Situação</th><th>Por</th>${nativo ? '' : '<th></th>'}</tr></thead><tbody>
-      ${r.ls.map(l => `<tr><td class="n">${esc(l.id)}</td><td>${quandoLocal(l.criado_em)}</td><td class="n">${esc(l.quantidade)}</td><td class="n">${nf(l.litros)}</td>
-        <td><span class="chip ${l.situacao === 'Confirmado' ? 'ok' : l.situacao === 'Gerado' ? 'pend' : 'neutro'}">${esc(l.situacao)}</span></td><td>${esc(l.criado_por)}</td>
-        ${nativo ? '' : `<td><button class="btn small ghost" type="button" data-acao="baixar" data-lote="${esc(l.id)}">Planilha</button></td>`}</tr>`).join('')}
-      </tbody></table></div>` : '<p class="vazio">Nenhum lote ainda.</p>'}</section>`;
+  return `${cabeca('Fechamento do turno', 'Cada turno fechado no app vira uma planilha no modelo do importador do KMM (Importação de abastecimento › Interno) e um relatório diário em PDF.')}
+    ${nativo ? soComputador('No celular é só consulta. Gerar a planilha, baixar e marcar como lançado é feito no computador.') : ''}
+    ${!souAdmin() && !nativo ? soComputador('Você baixa a planilha e o relatório. Gerar a planilha e marcar como lançado no KMM é com o administrador.') : ''}
+    ${r.ts.length ? r.ts.map(t => cartaoTurno(t, r.emLote)).join('') : '<div class="sem-dados"><b>Nenhum turno fechado ainda</b>O cartão do turno aparece aqui quando o frentista toca em Fechar turno no app.</div>'}`;
 };
+
+// ---------- Exportar › Relatório diário ----------
+TELAS.relatorios = async () => {
+  const ts = await carregar(() => rpc('turnos_kmm', { p_limite: 60 }), d => turnosDemo(d));
+  if (!ts) return;
+  return `${cabeca('Relatório diário', 'A folha do dia no modelo da Ritmo, preenchida sozinha depois do fechamento do turno e guardada no Google Drive.')}
+    <section class="painel"><div class="tabela"><table><thead><tr><th>Dia</th><th>Turno fechado</th><th class="n">Abastecimentos</th><th class="n">Chegadas</th><th>Relatório</th></tr></thead><tbody>
+    ${ts.map(t => `<tr><td>${esc(diaSemana(t.dia))}</td><td>${quandoLocal(t.fechado_em)}${t.fechado_por ? `<span class="sub">${esc(t.fechado_por)}</span>` : ''}</td>
+      <td class="n">${esc(t.abastecimentos)}</td><td class="n">${esc(t.chegadas)}</td>
+      <td>${t.relatorio ? `<a class="lk" href="${esc(t.relatorio.drive_url)}" target="_blank" rel="noopener noreferrer">Abrir PDF</a>${t.relatorio.atualizado ? '' : '<span class="sub">turno reaberto: o PDF vai ser refeito</span>'}`
+        : '<span class="hint">Sendo gerado (até 10 minutos depois do fechamento)</span>'}</td></tr>`).join('') || '<tr><td colspan="5" class="vazio">Nenhum turno fechado ainda.</td></tr>'}
+    </tbody></table></div></section>
+    <p class="hint">O PDF fica no Drive em Abastecimentos › mês › dia, junto com os comprovantes. Para imprimir, abra o PDF e imprima; a assinatura fica em branco para o carimbo do analista.</p>`;
+};
+
+// ---------- Exportar › Consultas (Excel com detalhes) ----------
+const EXPORTS = [
+  ['abastecimentos', 'Abastecimentos', 'Todos os campos de cada lançamento, com o link do comprovante no Drive.'],
+  ['chegadas', 'Chegadas de diesel', 'NF, litros, valor, régua antes e depois, caminhão, carreta, motorista e quem recebeu.'],
+  ['afericoes', 'Aferições', 'Bomba, litros do visor na medida de 20 L, diferença, quem fez e o link da foto.'],
+  ['decisoes', 'Decisões', 'Autorizações, correções, cancelamentos e turnos reabertos: o quê, por quem e com qual motivo.'],
+  ['fechamentos', 'Fechamentos de tanque', 'Saldo inicial, chegadas, saídas, esperado, régua e diferença de cada dia.'],
+  ['precos', 'Preço do diesel', 'Cada mudança do preço do litro, com quem mudou e de onde veio.'],
+];
+TELAS.consultas = async () => {
+  const fim = hojeISO(), ini = new Date(Date.now() - 30 * 86400000).toLocaleDateString('sv-SE');
+  return `${cabeca('Consultas', 'Planilhas em Excel com todos os detalhes, para conferir, guardar ou mandar para alguém.')}
+    ${nativo ? soComputador('As planilhas são baixadas no computador.') : ''}
+    <section class="painel"><div class="corpo">
+      <form class="filtros" data-periodo><div class="field"><label class="lbl" for="ex-de">De</label><input id="ex-de" name="de" type="date" value="${ini}"></div>
+        <div class="field"><label class="lbl" for="ex-ate">Até</label><input id="ex-ate" name="ate" type="date" value="${fim}"></div></form>
+      <div class="lista-exp">${EXPORTS.map(([id, rot, txt]) => `<div><b>${rot}</b><span>${txt}</span>
+        ${nativo ? '' : `<button class="btn small ghost" type="button" data-acao="exportar-consulta" data-tipo="${id}">Baixar Excel</button>`}</div>`).join('')}
+        <div><b>Histórico</b><span>Tudo o que foi feito no sistema, em linguagem simples.</span><button class="btn small ghost" type="button" data-ir="auditoria">Abrir o histórico</button></div>
+      </div></div></section>`;
+};
+async function todasAsLinhas(montar) {   // o Supabase devolve no máximo 1000 por vez
+  const todos = [];
+  for (let de = 0; ; de += 1000) {
+    const parte = await consulta(montar().range(de, de + 999));
+    todos.push(...parte);
+    if (parte.length < 1000) return todos;
+  }
+}
+async function linksDoDrive(entidade, chaves) {
+  const m = {};
+  for (let i = 0; i < chaves.length; i += 150) {
+    const r = await consulta(supabase.from('fotos').select('chave, drive_url').eq('entidade', entidade).in('chave', chaves.slice(i, i + 150).map(String)));
+    for (const f of r) m[f.chave] = f.drive_url || m[f.chave] || 'no Supabase (indo para o Drive)';
+  }
+  return m;
+}
+async function exportarConsulta(tipo) {
+  const de = $('ex-de')?.value, ate = $('ex-ate')?.value;
+  if (!de || !ate || de > ate) { avisar('Confira o período: a data inicial vem antes da final.', 'warn'); return; }
+  const ateFim = new Date(new Date(`${ate}T12:00:00`).getTime() + 86400000).toLocaleDateString('sv-SE');
+  const periodo = (q, col) => q.gte(col, de).lt(col, ateFim);
+  let cab, linhas;
+  if (tipo === 'abastecimentos') return exportarExcel(de, ate);
+  if (tipo === 'chegadas') {
+    const r = await todasAsLinhas(() => periodo(supabase.from('chegadas').select('*, frentistas(nome)'), 'data_hora').order('data_hora'));
+    const fotos = await linksDoDrive('chegada', r.map(x => x.id));
+    cab = ['Data e hora', 'Tanque', 'NF', 'Litros', 'Valor total', 'Régua antes', 'Régua depois', 'Placa do cavalo', 'Placa da carreta', 'Motorista', 'CPF', 'Alerta', 'Recebido por', 'Cancelada', 'Foto'];
+    linhas = r.map(x => [dataHora(x.data_hora), x.tanque, x.nf, Number(x.litros), x.valor_total == null ? '' : Number(x.valor_total), x.regua_antes ?? '', x.regua_depois ?? '',
+      x.placa_caminhao || '', x.placa_carreta || '', x.motorista || '', x.cpf || '', x.alerta || '', x.frentistas?.nome || '', x.cancelada ? 'Sim' : 'Não', fotos[x.id] || '']);
+  } else if (tipo === 'afericoes') {
+    const r = await todasAsLinhas(() => periodo(supabase.from('afericoes').select('*, frentistas(nome)'), 'data_hora').order('data_hora'));
+    const fotos = await linksDoDrive('afericao', r.map(x => x.id));
+    cab = ['Data e hora', 'Bomba', 'Medida (L)', 'Visor (L)', 'Diferença (mL)', 'Fora da tolerância', 'Encerrante antes', 'Encerrante depois', 'Frentista', 'Foto'];
+    linhas = r.map(x => [dataHora(x.data_hora), x.bomba, Number(x.medida_l), Number(x.visor_l), Math.round(Number(x.diferenca_l) * 1000), Math.abs(Number(x.diferenca_l)) > TOL_AFERICAO ? 'Sim' : 'Não',
+      Number(x.encerrante_anterior), Number(x.encerrante), x.frentistas?.nome || '', fotos[x.id] || '']);
+  } else if (tipo === 'decisoes') {
+    const acoes = ['autorizacao.aprovada', 'autorizacao.recusada', 'abastecimento.revalidar', 'abastecimento.aprovar', 'abastecimento.cancelar', 'abastecimento.erro_kmm', 'turno.reaberto', 'lote.confirmar', 'lote.desfazer'];
+    const [r, contas] = await Promise.all([todasAsLinhas(() => periodo(supabase.from('auditoria').select('*').in('acao', acoes), 'quando').order('quando')),
+      consulta(supabase.from('acessos').select('email, nome'))]);
+    const ctx = { contas: Object.fromEntries(contas.map(a => [a.email, a.nome])), frentistas: {} };
+    const texto = html => new DOMParser().parseFromString(html, 'text/html').body.textContent.replace(/\s+/g, ' ').trim();
+    cab = ['Data e hora', 'Quem', 'Cargo', 'O que fez', 'Motivo', 'Registro'];
+    linhas = r.map(e => { const x = descrever(e, ctx); return [new Date(e.quando).toLocaleString('pt-BR'), x.quem, x.papel, texto(x.frase), x.motivo || '', [e.entidade, e.entidade_id].filter(Boolean).join(' ')]; });
+  } else if (tipo === 'fechamentos') {
+    const r = await todasAsLinhas(() => supabase.from('fechamentos').select('*, frentistas(nome)').gte('data', de).lte('data', ate).order('data').order('tanque'));
+    cab = ['Dia', 'Tanque', 'Saldo inicial', '+ Chegadas', '− Saídas', 'Esperado', 'Régua (medido)', 'Diferença', 'Fechado por', 'Fechado em'];
+    linhas = r.map(f => [dataBR(f.data), f.tanque, Number(f.saldo_inicial), Number(f.chegadas), Number(f.saidas), Number(f.saldo_calculado), Number(f.saldo_medido),
+      Number(f.diferenca), f.frentistas?.nome || '', quandoLocal(f.criado_em)]);
+  } else if (tipo === 'precos') {
+    const r = await todasAsLinhas(() => periodo(supabase.from('precos_diesel').select('*, frentistas(nome)'), 'criado_em').order('id'));
+    cab = ['Quando', 'Preço do litro', 'Origem', 'Quem mudou'];
+    linhas = r.map(p => [quandoLocal(p.criado_em), Number(p.preco), { app: 'Digitado no app', chegada: 'Pela NF da chegada', painel: 'Painel' }[p.origem] || p.origem, p.frentistas?.nome || p.conta]);
+  } else return;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([cab, ...linhas]), EXPORTS.find(x => x[0] === tipo)[1].slice(0, 31));
+  XLSX.writeFile(wb, `${tipo}_${de}_a_${ate}.xlsx`);
+  avisar(`${linhas.length} linha(s) exportada(s).`);
+}
+
+// Lista para conferência: o que vai na planilha do KMM, legível, com uma coluna para marcar e o total
+function baixarConferencia(lote, dia, linhas) {
+  const cab = ['Nº requisição', 'Data e hora', 'Placa', 'Motorista', 'KM', 'Litros', 'Bomba', 'Preço do litro', 'Valor total', 'Observação', 'Conferido'];
+  const corpo = linhas.map(l => [Number(l.requisicao), dataHora(l.data_hora), l.placa, l.motorista || '', Number(l.km), Number(l.litros), Number(l.bomba),
+    l.preco == null ? '' : Number(l.preco), l.valor_total == null ? '' : Number(l.valor_total), l.de_outro_dia ? `de ${dataBR(l.data_hora).slice(0, 5)}` : '', '☐']);
+  const total = ['', '', '', 'Total', '', linhas.reduce((s, l) => s + Number(l.litros), 0), '', '', linhas.reduce((s, l) => s + (Number(l.valor_total) || 0), 0), `${linhas.length} abastecimento(s)`, ''];
+  const ws = XLSX.utils.aoa_to_sheet([[`Fechamento do turno de ${dataBR(dia)} · planilha nº ${lote}`], [], cab, ...corpo, [], total, [], ['Conferido por:', '', '', 'Data:', '', '', 'Assinatura:']]);
+  ws['!cols'] = [12, 17, 10, 24, 10, 9, 7, 12, 12, 14, 10].map(wch => ({ wch }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Conferência');
+  XLSX.writeFile(wb, `conferencia_turno_${dia}_n${lote}.xlsx`);
+}
 
 // ---------- Frentistas ----------
 TELAS.frentistas = async () => {
@@ -875,19 +1009,22 @@ document.addEventListener('click', async e => {
     if (r?.length) { avisar('Motorista tirado da placa.'); abrir('veiculos', { semCarregando: true }); } else if (r) avisar('Nada foi alterado: sem permissão.', 'warn');
   }
   else if (acao === 'gerar') {
-    const r = await agir(() => rpc('gerar_lote'));
-    if (r) { avisar(`Lote ${r.id} gerado com ${r.quantidade} registro(s). ${avisosLote(r.linhas).join(' ')}`); baixarLote(r.id, r.linhas); abrir('lotes', { semCarregando: true }); }
-  } else if (acao === 'baixar') {
-    const linhas = await agir(() => rpc('linhas_lote', { p_lote: Number(lote) }));
-    if (linhas) baixarLote(lote, linhas);
+    const r = await agir(() => rpc('gerar_lote', { p_dia: b.dataset.dia }));
+    if (r) { avisar(`Planilha do turno de ${dataBR(r.dia).slice(0, 5)} gerada com ${r.quantidade} abastecimento(s). ${avisosLote(r.linhas).join(' ')}`); baixarLote(r.id, r.linhas, r.dia); abrir('turnos', { semCarregando: true }); }
+  } else if (acao === 'baixar' || acao === 'conferencia') {
+    const linhas = await chamar(() => rpc('linhas_lote', { p_lote: Number(lote) }));
+    if (linhas) (acao === 'baixar' ? baixarLote(lote, linhas, b.dataset.dia) : baixarConferencia(lote, b.dataset.dia, linhas));
   } else if (acao === 'confirmar' || acao === 'desfazer') {
-    if (!confirmarDuasVezes(acao === 'confirmar' ? 'Clique de novo para confirmar' : 'Clique de novo para desfazer')) return;
+    if (!confirmarDuasVezes(acao === 'confirmar' ? 'Clique de novo: lançado no KMM' : 'Clique de novo para desfazer')) return;
     const r = await agir(() => rpc('fechar_lote', { p_lote: Number(lote), p_acao: acao }));
-    if (r) { avisar(`Lote ${r.id}: ${r.situacao.toLowerCase()} (${r.registros} registro(s)).`); abrir('lotes', { semCarregando: true }); }
+    if (r) { avisar(acao === 'confirmar' ? `Marcado como lançado no KMM (${r.registros} abastecimento(s)).` : `Desfeito: ${r.registros} abastecimento(s) voltaram para o próximo fechamento.`); abrir('turnos', { semCarregando: true }); }
+  } else if (acao === 'exportar-consulta') {
+    if (demo()) { avisar('Modo demonstração: as planilhas usam os dados reais; saia da demonstração para baixar.', 'info'); return; }
+    await chamar(() => exportarConsulta(b.dataset.tipo));
   } else if (acao === 'erro') {
     const msg = trabalho.querySelector(`[data-erro="${CSS.escape(id)}"]`).value.trim();
     if (msg.length < 3) { avisar('Escreva a mensagem de erro do KMM.', 'warn'); return; }
-    if (await agir(() => rpc('marcar_erro_kmm', { p_id: Number(id), p_mensagem: msg })) !== undefined) { avisar(`#${id} marcado com erro do KMM.`); abrir('lotes', { semCarregando: true }); }
+    if (await agir(() => rpc('marcar_erro_kmm', { p_id: Number(id), p_mensagem: msg })) !== undefined) { avisar(`#${id} marcado com erro do KMM.`); abrir('turnos', { semCarregando: true }); }
   } else if (acao === 'ver-fotos') {
     verFotos(b.dataset.entidade, b.dataset.chave, b.dataset.titulo);
   } else if (acao === 'foto-veiculo') {

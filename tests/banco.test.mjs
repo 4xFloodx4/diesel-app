@@ -86,7 +86,7 @@ test('conta Google não autorizada não vê nada nem chama funções', async () 
 });
 
 test('mesmo e-mail autorizado, mas sem ser login Google, é recusado', async () => {
-  await assert.rejects(como(CHEFE, 'select gerar_lote()', [], 'email'), /Acesso negado/);
+  await assert.rejects(como(CHEFE, 'select turnos_kmm(5)', [], 'email'), /Acesso negado/);
 });
 
 test('celular não grava nem lê tabelas diretamente, e ninguém lê PINs ou sessões', async () => {
@@ -104,7 +104,7 @@ test('funções internas não podem ser chamadas de fora', async () => {
 });
 
 test('celular não pode chamar funções do supervisor', async () => {
-  await assert.rejects(rpc(POSTO, 'gerar_lote'), /Acesso negado/);
+  await assert.rejects(rpc(POSTO, 'gerar_lote', { p_dia: dh(0).slice(0, 10) }), /Acesso negado/);
   await assert.rejects(rpc(POSTO, 'definir_pin', { p_frentista_id: ana, p_pin: '4827' }), /Acesso negado/);
   await assert.rejects(rpc(POSTO, 'decidir_autorizacao', { p_id: 1, p_aprovar: true, p_motivo: 'teste' }), /Acesso negado/);
 });
@@ -445,9 +445,16 @@ test('supervisor não move lançamento para um dia já fechado', async () => {
     p_alteracoes: { data_hora: dh(30) } }), /já foi fechado/);
 });
 
-// ---------- Lote do KMM ----------
-test('lote do KMM: só entra o Pronto, não repete, marca erro e trava alteração', async () => {
-  const lote = await rpc(CHEFE, 'gerar_lote');
+// ---------- Fechamento do turno para o KMM ----------
+test('fechamento do turno para o KMM: só o administrador gera, só de turno fechado, só entra o Pronto e não repete', async () => {
+  const hoje = dh(0).slice(0, 10), ontem = dh(60 * 24).slice(0, 10);
+  await assert.rejects(rpc(CHEFE, 'gerar_lote', { p_dia: hoje }), /Acesso negado/);   // supervisor só baixa
+  await assert.rejects(rpc(DONO, 'gerar_lote', { p_dia: ontem }), /ainda não foi fechado/);
+  let [cartao] = await rpc(CHEFE, 'turnos_kmm');
+  assert.equal(cartao.dia, hoje);
+  assert.equal(cartao.prontos, 8);
+  assert.deepEqual(cartao.lotes, []);
+  const lote = await rpc(DONO, 'gerar_lote', { p_dia: hoje });
   assert.equal(lote.quantidade, 8);
   assert.equal(Number(lote.litros), 640 + 100 + 20 + 30 + 10 + 10 + 10 + 10);
   assert.equal(lote.linhas.length, lote.quantidade);
@@ -456,11 +463,41 @@ test('lote do KMM: só entra o Pronto, não repete, marca erro e trava alteraç�
   const comPreco = lote.linhas.filter(l => l.preco != null);   // preço e valor total vão para a planilha do KMM
   assert.deepEqual(comPreco.map(l => [Number(l.preco), Number(l.valor_total)]), [[6.19, 61.9]]);
   const lotesAntes = (await db.query('select count(*)::int as n from lotes')).rows[0].n;
-  await assert.rejects(rpc(CHEFE, 'gerar_lote'), /Não há abastecimentos prontos/);
+  await assert.rejects(rpc(DONO, 'gerar_lote', { p_dia: hoje }), /Nada novo para lançar/);
   assert.equal((await db.query('select count(*)::int as n from lotes')).rows[0].n, lotesAntes);   // lote vazio não fica gravado
-  await rpc(CHEFE, 'marcar_erro_kmm', { p_id: lote.linhas[0].requisicao, p_mensagem: 'Placa bloqueada no KMM' });
-  assert.equal((await rpc(CHEFE, 'fechar_lote', { p_lote: lote.id, p_acao: 'confirmar' })).registros, 7);
-  await assert.rejects(rpc(CHEFE, 'decidir_abastecimento', { p_id: lote.linhas[1].requisicao, p_acao: 'cancelar', p_motivo: 'teste de trava' }), /não pode ser alterado/);
+  assert.equal((await rpc(CHEFE, 'linhas_lote', { p_lote: lote.id })).length, 8);   // supervisor baixa a planilha
+  assert.ok(lote.linhas.every(l => l.de_outro_dia === false));
+  [cartao] = await rpc(CHEFE, 'turnos_kmm');
+  assert.deepEqual([cartao.prontos, cartao.lotes.length, cartao.lotes[0].situacao, cartao.lotes[0].criado_por], [0, 1, 'Gerado', 'Dono']);
+  await assert.rejects(rpc(CHEFE, 'marcar_erro_kmm', { p_id: lote.linhas[0].requisicao, p_mensagem: 'Placa bloqueada' }), /Acesso negado/);
+  await rpc(DONO, 'marcar_erro_kmm', { p_id: lote.linhas[0].requisicao, p_mensagem: 'Placa bloqueada no KMM' });
+  await assert.rejects(rpc(CHEFE, 'fechar_lote', { p_lote: lote.id, p_acao: 'confirmar' }), /Acesso negado/);
+  assert.equal((await rpc(DONO, 'fechar_lote', { p_lote: lote.id, p_acao: 'confirmar' })).registros, 7);
+  await assert.rejects(rpc(DONO, 'fechar_lote', { p_lote: lote.id, p_acao: 'confirmar' }), /já está lançado no KMM/);
+  // lançou errado no KMM: o administrador desfaz um fechamento já lançado; tudo volta para Pronto e sai de novo
+  assert.equal((await rpc(DONO, 'fechar_lote', { p_lote: lote.id, p_acao: 'desfazer' })).registros, 7);
+  const refeito = await rpc(DONO, 'gerar_lote', { p_dia: hoje });
+  assert.equal(refeito.quantidade, 7);
+  assert.equal((await rpc(DEV, 'fechar_lote', { p_lote: refeito.id, p_acao: 'confirmar' })).registros, 7);
+  await assert.rejects(rpc(CHEFE, 'decidir_abastecimento', { p_id: refeito.linhas[0].requisicao, p_acao: 'cancelar', p_motivo: 'teste de trava' }), /não pode ser alterado/);
+});
+
+test('relatório diário: o Apps Script pega o dia fechado com cabeçalho, abastecimentos e chegadas, e marca quando o PDF está no Drive', async () => {
+  const hoje = dh(0).slice(0, 10);
+  await assert.rejects(como(CHEFE, 'select relatorios_para_drive()'), /permission denied/);
+  let fila = (await comoServico('select relatorios_para_drive() as r'))[0].r;
+  const r = fila.find(x => x.data === hoje);
+  assert.ok(r, JSON.stringify(fila.map(x => x.data)));
+  assert.deepEqual(r.tanques.map(t => [t.tanque, Number(t.saldo_inicial)]), [['TQ01', 12000]]);
+  assert.deepEqual(r.bombas.map(b => b.bomba), [1, 2]);
+  assert.ok(r.abastecimentos.length >= 8 && r.abastecimentos.every(a => /^\d{2}:\d{2}$/.test(a.hora) && a.placa));
+  assert.equal(r.chegadas[0].nf, '45871');
+  assert.match(r.hora, /^\d{2}:\d{2} às \d{2}:\d{2}$/);
+  await comoServico('select relatorio_no_drive($1, $2, $3, $4)', [hoje, '1RelatorioDriveId', 'https://drive.google.com/file/d/1RelatorioDriveId/view', r.fechamento_em]);
+  fila = (await comoServico('select relatorios_para_drive() as r'))[0].r;
+  assert.ok(!fila.some(x => x.data === hoje));
+  const [cartao] = await rpc(CHEFE, 'turnos_kmm');
+  assert.deepEqual([cartao.relatorio.drive_url, cartao.relatorio.atualizado], ['https://drive.google.com/file/d/1RelatorioDriveId/view', true]);
 });
 
 test('ninguém apaga abastecimento nem mexe na auditoria', async () => {
@@ -503,7 +540,7 @@ test('desenvolvedor pode tudo o que o administrador pode; o horário do turno é
   assert.equal((await rpc(DEV, 'estado_posto')).papel, 'desenvolvedor');
   assert.equal((await como(DEV, "update configuracoes set abertura = '00:00' where id = 1 returning id")).length, 1);
   assert.equal((await como(CHEFE, "update configuracoes set abertura = '00:00' where id = 1 returning id")).length, 0);
-  await assert.rejects(rpc(POSTO, 'gerar_lote'), /Acesso negado/);
+  await assert.rejects(rpc(POSTO, 'turnos_kmm'), /Acesso negado/);
 });
 
 test('histórico: cada cargo vê o próprio nível e os de baixo; o administrador também vê o desenvolvedor', async () => {
