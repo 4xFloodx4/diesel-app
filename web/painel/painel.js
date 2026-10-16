@@ -950,26 +950,48 @@ async function importarBase(arquivo) {
   if (!total) { avisar('Nenhuma aba reconhecida. Use as colunas do arquivo exportado (placa, nome, cpf…).', 'warn'); return; }
   const resultado = { veiculos: 0, motoristas: 0, vinculos: 0 }, erros = [];
   let feitos = 0;
-  // Ordem: veículos e motoristas antes dos vínculos, que dependem deles
+  // Coluna em branco não vai no registro: assim não apaga o que já está no banco (ex.: capacidade já informada pelo frentista)
+  const registro = (tipo, l) => {
+    const reg = {};
+    if (tipo === 'veiculos') {
+      const cap = coluna(l, 'capacidade_tanque_l', 'capacidade_l', 'capacidade', 'tanque_l', 'tanque'), km = coluna(l, 'km_inicial', 'ultimo_km', 'km');
+      reg.placa = soPlaca(coluna(l, 'placa'));
+      if (cap) reg.capacidade_l = parseNum(cap);
+      if (km) reg.km_inicial = Number(soDigitos(km));
+    } else {
+      const cpf = soDigitos(coluna(l, 'cpf'));
+      reg.nome = coluna(l, 'nome').toUpperCase();
+      if (cpf) reg.cpf = cpf.padStart(11, '0');   // sem CPF: o frentista informa no primeiro abastecimento
+    }
+    const ativo = lerAtivo(coluna(l, 'ativo'));
+    if (ativo !== undefined) reg.ativo = ativo;
+    return reg;
+  };
+  const motivoErro = (tipo, msg) => /check constraint|invalid input/.test(msg) ? (tipo === 'veiculos' ? 'placa ou capacidade inválida' : 'CPF inválido')
+    : /duplicate key|affect row a second time/.test(msg) ? 'repetido na planilha' : msg;
+  // Ordem: veículos e motoristas antes dos vínculos, que dependem deles. Envia em blocos de linhas com as mesmas colunas
+  // (o upsert em bloco atualiza todas as colunas enviadas); se um bloco falhar, refaz linha por linha para apontar qual foi.
+  const TAMANHO_BLOCO = 200;
   for (const tipo of ['veiculos', 'motoristas']) {
-    for (const { l, linha, aba } of abas[tipo]) {
-      avisar(`Importando ${++feitos} de ${total}…`, 'info');
-      let reg;
-      if (tipo === 'veiculos') {
-        const cap = coluna(l, 'capacidade_tanque_l', 'capacidade_l', 'capacidade', 'tanque_l', 'tanque'), km = coluna(l, 'km_inicial', 'ultimo_km', 'km');
-        reg = { placa: soPlaca(coluna(l, 'placa')) };
-        if (cap) reg.capacidade_l = parseNum(cap);
-        if (km) reg.km_inicial = Number(soDigitos(km));
-      } else {
-        reg = { nome: coluna(l, 'nome').toUpperCase(), cpf: soDigitos(coluna(l, 'cpf')).padStart(11, '0') };
+    const conflito = tipo === 'veiculos' ? 'placa' : 'nome';
+    const grupos = new Map();
+    for (const item of abas[tipo]) {
+      const reg = registro(tipo, item.l), chave = Object.keys(reg).sort().join(',');
+      if (!grupos.has(chave)) grupos.set(chave, []);
+      grupos.get(chave).push({ ...item, reg });
+    }
+    for (const grupo of grupos.values()) {
+      for (let i = 0; i < grupo.length; i += TAMANHO_BLOCO) {
+        const bloco = grupo.slice(i, i + TAMANHO_BLOCO);
+        avisar(`Importando ${feitos + bloco.length} de ${total}…`, 'info');
+        const r = await supabase.from(tipo).upsert(bloco.map(b => b.reg), { onConflict: conflito });
+        if (!r.error) { resultado[tipo] += bloco.length; feitos += bloco.length; continue; }
+        for (const { reg, linha, aba } of bloco) {
+          avisar(`Conferindo linha a linha: ${++feitos} de ${total}…`, 'info');
+          const r1 = await supabase.from(tipo).upsert(reg, { onConflict: conflito });
+          if (r1.error) erros.push(`${aba} linha ${linha}: ${motivoErro(tipo, r1.error.message)}`); else resultado[tipo]++;
+        }
       }
-      const ativo = lerAtivo(coluna(l, 'ativo'));
-      if (ativo !== undefined) reg.ativo = ativo;
-      const r = await supabase.from(tipo).upsert(reg, { onConflict: tipo === 'veiculos' ? 'placa' : 'nome' });
-      if (!r.error) { resultado[tipo]++; continue; }
-      const motivo = /null value/.test(r.error.message) ? 'falta a capacidade do tanque'
-        : /check constraint|invalid input/.test(r.error.message) ? (tipo === 'veiculos' ? 'placa ou capacidade inválida' : 'CPF inválido') : r.error.message;
-      erros.push(`${aba} linha ${linha}: ${motivo}`);
     }
   }
   if (abas.vinculos.length) {

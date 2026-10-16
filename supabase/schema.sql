@@ -365,6 +365,7 @@ declare v_novo jsonb := case when tg_op <> 'DELETE' then to_jsonb(new) end;
         v_velho jsonb := case when tg_op <> 'INSERT' then to_jsonb(old) end;
         v_chave text;
 begin
+  if tg_op = 'UPDATE' and v_novo = v_velho then return new; end if;   -- reimportar a planilha sem mudar nada não enche o histórico
   if v_novo ? 'cpf' then v_novo := v_novo || jsonb_build_object('cpf', '***' || right(v_novo ->> 'cpf', 2)); end if;
   if v_velho ? 'cpf' then v_velho := v_velho || jsonb_build_object('cpf', '***' || right(v_velho ->> 'cpf', 2)); end if;
   if tg_table_name = 'veiculo_motoristas' then   -- o histórico mostra o nome, não só o número do motorista
