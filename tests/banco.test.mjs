@@ -395,6 +395,26 @@ test('comprovantes vão para o Google Drive: só o Apps Script (service_role) l�
   await assert.rejects(db.exec(`update fotos set entidade = 'chegada' where caminho = '${x.caminho}'`), /não pode ser alterada/);
 });
 
+test('caminhão de diesel: a primeira chegada cadastra; nas próximas a placa do cavalo completa carreta, motorista e CPF', async () => {
+  const chegada = d => rpc(POSTO, 'registrar_chegada', { p_sessao: sessao, p_dados: { uuid: randomUUID(), tanque: 'TQ01', data_hora: dh(60 * 24), nf: '900', litros: 10, ...d } });
+  await assert.rejects(chegada({ placa_caminhao: 'SUT4I8', motorista: 'X' }), /Placa do cavalo inválida/);
+  await assert.rejects(chegada({ placa_caminhao: 'SUT4I86', cpf: '111.111.111-12' }), /CPF do motorista do caminhão inválido/);
+  await chegada({ placa_caminhao: 'sut-4i86', placa_carreta: 'SWH0H70', motorista: 'Marcos Lima', cpf: '529.982.247-25' });
+  let e = await rpc(POSTO, 'estado_posto');
+  assert.deepEqual(e.caminhoes_diesel, [{ placa: 'SUT4I86', carreta: 'SWH0H70', motorista: 'MARCOS LIMA', cpf_fim: '25' }]);
+  assert.ok(!JSON.stringify(e.caminhoes_diesel).includes('52998224725'));   // o celular não recebe o CPF
+  const c2 = await chegada({ placa_caminhao: 'SUT4I86' });
+  assert.deepEqual((await db.query('select placa_carreta, motorista, cpf from chegadas where id = $1', [c2.id])).rows[0],
+    { placa_carreta: 'SWH0H70', motorista: 'MARCOS LIMA', cpf: '52998224725' });
+  await chegada({ placa_caminhao: 'SUT4I86', placa_carreta: 'QPA7C03' });   // trocou a carreta: o cadastro guarda a última
+  e = await rpc(POSTO, 'estado_posto');
+  assert.equal(e.caminhoes_diesel[0].carreta, 'QPA7C03');
+  await assert.rejects(como(POSTO, "insert into caminhoes_diesel (placa_cavalo) values ('ABC1D99')"), /row-level security/);
+  assert.equal((await como(CHEFE, "update caminhoes_diesel set motorista = 'marcos  de lima' where placa_cavalo = 'SUT4I86' returning motorista"))[0].motorista, 'MARCOS DE LIMA');
+  const aud = (await db.query("select papel from auditoria where acao = 'cadastro.caminhoes_diesel.insert'")).rows;
+  assert.deepEqual(aud, [{ papel: 'posto' }]);
+});
+
 // ---------- Chegada, fechamento e fotos ----------
 test('chegada com data no futuro ou antiga é recusada', async () => {
   await assert.rejects(rpc(POSTO, 'registrar_chegada', { p_sessao: sessao, p_dados: { uuid: randomUUID(), tanque: 'TQ01', data_hora: dh(-120), nf: '7', litros: 100 } }), /no futuro/);

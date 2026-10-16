@@ -130,7 +130,7 @@ const IC = {
 const MENU = [
   ['Operação', [['resumo', 'Visão do dia', 'grade'], ['decisoes', 'Decisões', 'lista'], ['abastecimentos', 'Abastecimentos', 'doc'], ['tanques', 'Tanques e fechamentos', 'gota']]],
   ['Exportar', [['turnos', 'Fechamento do turno', 'kmm'], ['relatorios', 'Relatório diário', 'doc'], ['consultas', 'Consultas', 'baixar']]],
-  ['Cadastros', [['frentistas', 'Frentistas', 'pessoa'], ['veiculos', 'Veículos e motoristas', 'caminhao']]],
+  ['Cadastros', [['frentistas', 'Frentistas', 'pessoa'], ['veiculos', 'Veículos e motoristas', 'caminhao'], ['caminhoes', 'Caminhões de diesel', 'caminhao']]],
   ['Sistema', [['acessos', 'Acessos', 'cadeado', 'admin'], ['auditoria', 'Histórico', 'historico'], ['turno', 'Horário do turno', 'turno', 'admin']]],
   ['Ajuda', [['guia', 'Guia de uso', 'ajuda']]],
 ];
@@ -793,6 +793,26 @@ TELAS.frentistas = async () => {
 };
 
 // ---------- Veículos e motoristas ----------
+// ---------- Cadastros › Caminhões de diesel (fornecedor) ----------
+// O frentista cadastra na chegada; aqui o supervisor corrige, desativa ou exclui. O CPF não aparece inteiro.
+TELAS.caminhoes = async () => {
+  const lista = await carregar(() => consulta(supabase.from('caminhoes_diesel').select('*').order('ativo', { ascending: false }).order('placa_cavalo')), () => []);
+  if (!lista) return;
+  est.cad = { ...(est.cad || {}), caminhoes_diesel: lista };
+  return `${cabeca('Caminhões de diesel', 'Os caminhões que trazem o diesel. Na chegada, o frentista digita o começo da placa do cavalo e o resto vem preenchido.')}
+    <section class="painel"><header><h2>Cadastrar ou corrigir</h2><span>CPF em branco mantém o que já está no cadastro</span></header><div class="corpo">
+      <form class="formulario" data-form="caminhoes_diesel">
+        ${campo('Placa do cavalo', 'placa_cavalo', 'required maxlength="8" autocomplete="off"')}${campo('Placa da carreta', 'placa_carreta', 'maxlength="8" autocomplete="off"')}
+        ${campo('Motorista', 'motorista', 'maxlength="120" autocomplete="off"')}${campo('CPF do motorista', 'cpf', 'class="num" inputmode="numeric" maxlength="14" autocomplete="off"')}
+        ${simNao('Ativo', 'ativo')}<button class="btn small" type="submit">Salvar caminhão</button></form></div></section>
+    <section class="painel"><header><h2>Cadastrados</h2><span>${lista.length} caminhão(ões)</span></header>
+      ${lista.length ? `<div class="tabela"><table><thead><tr><th>Cavalo</th><th>Carreta</th><th>Motorista</th><th>CPF</th><th>Ativo</th><th></th></tr></thead><tbody>
+      ${lista.map(c => `<tr><td>${placa(c.placa_cavalo)}<span class="sub">${esc(c.criado_por || 'Painel')}</span></td><td>${c.placa_carreta ? placa(c.placa_carreta) : '—'}</td>
+        <td>${esc(c.motorista || '—')}</td><td>${c.cpf ? `***.***.***-${esc(c.cpf.slice(-2))}` : '<span class="chip alerta">sem CPF</span>'}</td><td>${c.ativo ? 'Sim' : 'Não'}</td>
+        <td><div class="acoes">${botaoEditar('caminhoes_diesel', c.placa_cavalo)}${botaoExcluir('caminhoes_diesel', 'placa_cavalo', c.placa_cavalo)}</div></td></tr>`).join('')}
+      </tbody></table></div>` : '<p class="vazio">Nenhum caminhão ainda. O primeiro aparece quando o frentista registrar uma chegada de diesel com a placa do cavalo.</p>'}</section>`;
+};
+
 TELAS.veiculos = async () => {
   const c = await carregar(async () => ({ ...(await carregarCadastros()), fv: await contarFotos('veiculo'),
     vinculos: await consulta(supabase.from('veiculo_motoristas').select('placa, motorista_id, motoristas(nome, cpf)').limit(20000)) }),
@@ -836,7 +856,7 @@ TELAS.veiculos = async () => {
 
 function editarCadastro(tabela, id) {
   const lista = est.cad?.[tabela];
-  const chave = { veiculos: 'placa', motoristas: 'id', tanques: 'codigo', bombas: 'numero' }[tabela];
+  const chave = { veiculos: 'placa', motoristas: 'id', tanques: 'codigo', bombas: 'numero', caminhoes_diesel: 'placa_cavalo' }[tabela];
   const item = lista?.find(x => String(x[chave]) === String(id));
   const f = trabalho.querySelector(`form[data-form="${tabela}"]`);
   if (!item || !f) return;
@@ -957,7 +977,7 @@ trabalho.addEventListener('submit', async e => {
     return abrir('frentistas', { semCarregando: true });
   }
   const tabela = f.dataset.form;
-  if (!['veiculos', 'motoristas', 'tanques', 'bombas', 'acessos'].includes(tabela)) return;
+  if (!['veiculos', 'motoristas', 'tanques', 'bombas', 'acessos', 'caminhoes_diesel'].includes(tabela)) return;
   for (const k of ['capacidade_l', 'saldo_inicial', 'encerrante_inicial']) if (k in d) d[k] = d[k] === '' ? null : parseNum(d[k]);
   for (const k of ['numero', 'km_inicial']) if (k in d) d[k] = d[k] === '' ? null : Number(soDigitos(d[k]));
   for (const k of ['ativo', 'ativa']) if (k in d) d[k] = d[k] === 'true';
@@ -966,12 +986,17 @@ trabalho.addEventListener('submit', async e => {
   if (tabela === 'acessos') { d.email = d.email.trim().toLowerCase(); d.nome = d.nome.trim(); if (d.papel === 'administrador' && !souDev()) d.papel = 'supervisor'; }
   if (tabela === 'veiculos') d.placa = d.placa.toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (tabela === 'tanques') d.codigo = d.codigo.trim().toUpperCase();
+  if (tabela === 'caminhoes_diesel') {
+    for (const k of ['placa_cavalo', 'placa_carreta']) d[k] = d[k].toUpperCase().replace(/[^A-Z0-9]/g, '') || null;
+    d.motorista = d.motorista.trim().toUpperCase() || null;
+    if (!d.cpf) delete d.cpf;   // em branco: mantém o CPF que já está no cadastro
+  }
   for (const [k, v] of Object.entries(d)) if (typeof v === 'number' && Number.isNaN(v)) { avisar('Confira os números digitados.', 'warn'); return; }
   let r;
   if (tabela === 'motoristas' && f.dataset.editandoId) {
     r = await agir(() => consulta(supabase.from('motoristas').update(d).eq('id', f.dataset.editandoId).select()));
   } else {
-    const conflito = { veiculos: 'placa', motoristas: 'nome', tanques: 'codigo', bombas: 'numero', acessos: 'email' }[tabela];
+    const conflito = { veiculos: 'placa', motoristas: 'nome', tanques: 'codigo', bombas: 'numero', acessos: 'email', caminhoes_diesel: 'placa_cavalo' }[tabela];
     r = await agir(() => consulta(supabase.from(tabela).upsert(d, { onConflict: conflito }).select()));
   }
   if (r?.length) { avisar('Salvo.'); abrir(est.tela, { semCarregando: true }); } else if (r) avisar('Nada foi salvo: sem permissão para esse registro.', 'warn');
@@ -1049,7 +1074,7 @@ document.addEventListener('click', async e => {
     const r = await agir(() => consulta(supabase.from(tabela).update({ [col]: valor === 'true' }).eq(chave, id).select()));
     if (r?.length) { avisar('Atualizado.'); abrir(est.tela, { semCarregando: true }); } else if (r) avisar('Nada foi alterado: sem permissão para esse registro.', 'warn');
   } else if (acao === 'excluir') {
-    if (!['frentistas', 'acessos', 'veiculos', 'motoristas', 'tanques', 'bombas'].includes(tabela)) return;
+    if (!['frentistas', 'acessos', 'veiculos', 'motoristas', 'tanques', 'bombas', 'caminhoes_diesel'].includes(tabela)) return;
     if (!confirmarDuasVezes(['veiculos', 'motoristas'].includes(tabela) ? 'Clique de novo (o histórico fica)' : 'Clique de novo para excluir')) return;
     const r = await agir(() => consulta(supabase.from(tabela).delete().eq(chave, id).select()));
     if (r?.length) { avisar('Excluído.'); abrir(est.tela, { semCarregando: true }); } else if (r) avisar('Nada foi excluído: sem permissão para esse registro.', 'warn');

@@ -463,7 +463,9 @@ function telaChegada() {
   if (estado.fechado_hoje) return avisoHtml() + diaFechado();
   const f = chegada, l = parseNum(f.litros), sub = parseNum(f.depois) - parseNum(f.antes);
   const okRegua = l > 0 && sub > 0 && Math.abs(sub - l) <= LIM.tolTanque;
-  const pode = f.tanque && f.nf.trim() && l > 0 && /^\d{2}:\d{2}$/.test(f.hora);
+  const placaOk = !soPlaca(f.placa) || /^[A-Z]{3}\d[A-Z0-9]\d{2}$/.test(soPlaca(f.placa));
+  const pode = f.tanque && f.nf.trim() && l > 0 && /^\d{2}:\d{2}$/.test(f.hora) && placaOk;
+  const faltaChegada = !f.nf.trim() ? 'Falta: o número da nota fiscal' : !(l > 0) ? 'Falta: os litros da NF' : !placaOk ? 'Falta: a placa do cavalo completa' : '';
   const s = sugestaoPreco, atual = estado.preco_diesel;
   return `
     ${avisoHtml()}
@@ -484,16 +486,35 @@ function telaChegada() {
       <div class="field"><label class="lbl" for="c-depois">Régua depois</label><input id="c-depois" class="num" inputmode="decimal" value="${esc(f.depois)}"></div>
     </div>
     ${sub > 0 ? `<ul class="checks"><li class="${okRegua ? 'ok' : 'falha'}">A régua subiu ${nf(sub)} L; a NF diz ${nf(l)} L.</li></ul>` : ''}
-    <div class="row2">
-      <div class="field"><label class="lbl" for="c-placa">Placa caminhão</label><input id="c-placa" maxlength="8" value="${esc(f.placa)}"></div>
-      <div class="field"><label class="lbl" for="c-carreta">Placa carreta</label><input id="c-carreta" maxlength="8" value="${esc(f.carreta)}"></div>
-    </div>
-    <div class="row2">
-      <div class="field"><label class="lbl" for="c-motorista">Motorista</label><input id="c-motorista" maxlength="120" value="${esc(f.motorista)}"></div>
-      <div class="field"><label class="lbl" for="c-cpf">CPF</label><input id="c-cpf" class="num" inputmode="numeric" maxlength="14" value="${esc(f.cpf)}"></div>
-    </div>
+    ${blocoCaminhaoDiesel(f)}
     ${blocoFotos(fotosChegada, 'chegada')}
-    ${botaoEnviar('chegada', 'Registrar chegada', pode)}`;
+    ${botaoEnviar('chegada', 'Registrar chegada', pode, '', faltaChegada)}`;
+}
+
+// Caminhão que trouxe o diesel: o frentista digita o começo da placa do cavalo e toca no cadastrado; carreta e motorista
+// vêm preenchidos (dá para trocar) e o CPF fica no cadastro. Caminhão novo: preenche tudo e fica cadastrado ao registrar.
+const caminhaoDiesel = placa => (estado.caminhoes_diesel || []).find(c => c.placa === soPlaca(placa));
+function escolherCaminhao(placa) {
+  const c = caminhaoDiesel(placa);
+  chegada.placa = placa;
+  if (c) { chegada.carreta = c.carreta || ''; chegada.motorista = c.motorista || ''; chegada.cpf = ''; }
+}
+function blocoCaminhaoDiesel(f) {
+  const txt = soPlaca(f.placa), cad = caminhaoDiesel(f.placa);
+  const lista = txt && !cad ? (estado.caminhoes_diesel || []).filter(c => c.placa.includes(txt)).slice(0, MAX_SUGESTOES) : [];
+  const novo = !cad && /^[A-Z]{3}\d[A-Z0-9]\d{2}$/.test(txt) && !lista.length;
+  return `<div class="field"><label class="lbl" for="c-placa">Placa do cavalo (caminhão que trouxe o diesel)</label>
+      <input id="c-placa" class="busca" maxlength="8" autocapitalize="characters" ${SEM_TECLADO_ESPERTO} placeholder="Digite o começo da placa" value="${esc(f.placa)}">
+      ${cad ? `<span class="escolhido">✓ ${esc(cad.placa)} cadastrado${cad.cpf_fim ? ` · CPF final ${esc(cad.cpf_fim)} no cadastro` : ''}</span>` : ''}
+      ${lista.length ? `<div class="sugestoes">${lista.map(c => `<button type="button" data-sug-cavalo="${esc(c.placa)}"><b>${esc(c.placa)}</b>
+        <small>${esc([c.carreta && `carreta ${c.carreta}`, c.motorista].filter(Boolean).join(' · '))}</small></button>`).join('')}</div>` : ''}
+      ${novo ? '<span class="hint">Caminhão novo: preencha a carreta, o motorista e o CPF. Ele fica cadastrado ao registrar a chegada.</span>' : ''}</div>
+    <div class="row2">
+      <div class="field"><label class="lbl" for="c-carreta">Placa da carreta</label><input id="c-carreta" class="busca" maxlength="8" autocapitalize="characters" ${SEM_TECLADO_ESPERTO} value="${esc(f.carreta)}"></div>
+      <div class="field"><label class="lbl" for="c-cpf">CPF do motorista</label><input id="c-cpf" class="num" inputmode="numeric" maxlength="14" ${SEM_TECLADO_ESPERTO}
+        placeholder="${cad?.cpf_fim ? 'já no cadastro' : ''}" value="${esc(f.cpf)}"></div>
+    </div>
+    <div class="field"><label class="lbl" for="c-motorista">Motorista</label><input id="c-motorista" class="busca" maxlength="120" autocapitalize="characters" ${SEM_TECLADO_ESPERTO} value="${esc(f.motorista)}"></div>`;
 }
 
 // Últimas aferições, com quem fez (acima de 100 mL fica vermelho)
@@ -654,6 +675,11 @@ conteudo.addEventListener('input', e => {
     form.motoristaTxt = e.target.value;
     form.motorista = estado.motoristas.find(m => semAcento(m) === semAcento(e.target.value)) || '';
     aviso = null;
+  } else if (id === 'c-placa') {
+    // digitou a placa inteira de um caminhão cadastrado: já preenche o resto
+    const antes = caminhaoDiesel(chegada.placa);
+    chegada.placa = e.target.value;
+    if (!antes && caminhaoDiesel(e.target.value)) escolherCaminhao(e.target.value);
   } else if (mapaChegada[id]) chegada[mapaChegada[id]] = e.target.value;
   else if (mapaVeiculo[id]) novoVeiculo[mapaVeiculo[id]] = e.target.value;
   else if (mapaMotorista[id]) novoMotorista[mapaMotorista[id]] = e.target.value;
@@ -678,6 +704,7 @@ conteudo.addEventListener('click', async e => {
     form.motorista = form.motoristaTxt = alvo('[data-sug-motorista]').dataset.sugMotorista; aviso = null; render();
     return $('f-km')?.focus();
   }
+  if (alvo('[data-sug-cavalo]')) { escolherCaminhao(alvo('[data-sug-cavalo]').dataset.sugCavalo); render(); return $('c-nf')?.focus(); }
   if (alvo('[data-afericao-bomba]')) { afericao.bomba = Number(alvo('[data-afericao-bomba]').dataset.afericaoBomba); aviso = null; return render(); }
   if (alvo('[data-desconto]')) { form.desconto = alvo('[data-desconto]').dataset.desconto === 'sim'; return render(); }
   if (alvo('[data-frentista]')) { escolhido = Number(alvo('[data-frentista]').dataset.frentista); pin = ''; aviso = null; return render(); }

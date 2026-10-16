@@ -198,6 +198,18 @@ create table if not exists veiculo_motoristas (
 );
 create index if not exists ix_vinculo_motorista on veiculo_motoristas (motorista_id);
 
+-- Caminhões que trazem o diesel (fornecedor): cavalo, carreta, motorista e CPF. Na chegada, o frentista digita o começo
+-- da placa do cavalo e o resto vem preenchido; caminhão novo ele cadastra ali mesmo. Guarda a última combinação usada.
+create table if not exists caminhoes_diesel (
+  placa_cavalo   text primary key check (placa_cavalo ~ '^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$'),
+  placa_carreta  text check (placa_carreta is null or placa_carreta ~ '^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$'),
+  motorista      text check (length(motorista) <= 120),
+  cpf            text check (cpf is null or (cpf ~ '^\d{11}$' and cpf_valido(cpf))),
+  ativo          boolean not null default true,
+  criado_por     text,
+  criado_em      timestamptz not null default now()
+);
+
 create table if not exists tanques (
   codigo         text primary key check (codigo ~ '^[A-Z0-9 _-]{1,20}$'),
   capacidade_l   numeric(10, 1) not null check (capacidade_l > 0),
@@ -224,6 +236,11 @@ begin
     new.nome := normaliza_nome(new.nome);
     new.cpf := regexp_replace(new.cpf, '\D', '', 'g');
   elsif tg_table_name = 'frentistas' then new.nome := regexp_replace(trim(new.nome), '\s+', ' ', 'g');
+  elsif tg_table_name = 'caminhoes_diesel' then
+    new.placa_cavalo := normaliza_placa(new.placa_cavalo);
+    new.placa_carreta := nullif(normaliza_placa(new.placa_carreta), '');
+    new.motorista := nullif(normaliza_nome(new.motorista), '');
+    new.cpf := nullif(regexp_replace(coalesce(new.cpf, ''), '\D', '', 'g'), '');
   elsif tg_table_name = 'tanques' then new.codigo := upper(trim(new.codigo));
   elsif tg_table_name = 'bombas' then new.tanque := upper(trim(new.tanque));
   elsif tg_table_name = 'acessos' then new.email := lower(trim(new.email));
@@ -427,6 +444,7 @@ begin
     if v_velho is not null then v_velho := v_velho || jsonb_build_object('motorista', (select nome from motoristas where id = old.motorista_id)); end if;
   end if;
   v_chave := coalesce(v_novo, v_velho) ->> (case tg_table_name when 'veiculos' then 'placa' when 'veiculo_motoristas' then 'placa' when 'tanques' then 'codigo'
+                                             when 'caminhoes_diesel' then 'placa_cavalo'
                                              when 'bombas' then 'numero' when 'acessos' then 'email' else 'id' end);
   perform auditar('cadastro.' || tg_table_name || '.' || lower(tg_op), tg_table_name, v_chave,
                   jsonb_build_object('antes', v_velho, 'depois', v_novo));
@@ -462,7 +480,7 @@ create trigger proteger before insert or update or delete on acessos
 do $$
 declare t text;
 begin
-  foreach t in array array['veiculos', 'motoristas', 'veiculo_motoristas', 'frentistas', 'tanques', 'bombas', 'acessos', 'configuracoes'] loop
+  foreach t in array array['veiculos', 'motoristas', 'veiculo_motoristas', 'frentistas', 'tanques', 'bombas', 'acessos', 'configuracoes', 'caminhoes_diesel'] loop
     execute format('drop trigger if exists normalizar on %I', t);
     execute format('create trigger normalizar before insert or update on %I for each row execute function normalizar_cadastro()', t);
     execute format('drop trigger if exists auditar on %I', t);
@@ -741,6 +759,9 @@ begin
         'motoristas', coalesce((select jsonb_agg(m.nome order by m.nome) from veiculo_motoristas vm
                                   join motoristas m on m.id = vm.motorista_id and m.ativo where vm.placa = v.placa), '[]')
       ) order by v.placa) from veiculos v where v.ativo), '[]'),
+    -- Caminhões de diesel cadastrados (o celular não recebe o CPF: só se tem e os 2 últimos números)
+    'caminhoes_diesel', coalesce((select jsonb_agg(jsonb_build_object('placa', c.placa_cavalo, 'carreta', c.placa_carreta, 'motorista', c.motorista,
+        'cpf_fim', right(c.cpf, 2)) order by c.placa_cavalo) from caminhoes_diesel c where c.ativo), '[]'),
     -- O celular não recebe CPF
     'motoristas', coalesce((select jsonb_agg(nome order by nome) from motoristas where ativo), '[]'),
     -- só os nomes de quem ainda está sem CPF (o app pede o CPF no primeiro abastecimento)
@@ -888,9 +909,14 @@ begin
   return jsonb_build_object('uuid', r ->> 'uuid', 'id', v_id, 'status', v_status, 'problemas', c -> 'problemas');
 end $$;
 
+-- Chegada de diesel. O caminhão (cavalo) cadastrado completa carreta, motorista e CPF que o frentista deixar em branco;
+-- caminhão novo é cadastrado aqui, e o cadastro guarda a última carreta, motorista e CPF usados.
 create or replace function registrar_chegada(p_sessao text, p_dados jsonb, p_fotos text[] default '{}') returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare r jsonb := p_dados; v_ex chegadas; v_id bigint; v_alerta text; v_sub numeric; v_lt numeric; v_frent bigint;
+        v_cav text := nullif(normaliza_placa(r ->> 'placa_caminhao'), ''); v_car text := nullif(normaliza_placa(r ->> 'placa_carreta'), '');
+        v_mot text := nullif(normaliza_nome(r ->> 'motorista'), ''); v_cpf text := nullif(regexp_replace(coalesce(r ->> 'cpf', ''), '\D', '', 'g'), '');
+        v_cam caminhoes_diesel;
 begin
   perform exigir(array['posto', 'supervisor']);
   v_frent := frentista_da_sessao(p_sessao);
@@ -899,6 +925,11 @@ begin
   perform validar_data_lancamento(date_trunc('second', (r ->> 'data_hora')::timestamp));
   v_lt := (r ->> 'litros')::numeric;
   if v_lt is null or v_lt <= 0 or v_lt >= 100000 then raise exception 'Litros da nota fora do permitido.' using errcode = '22023'; end if;
+  if v_cav is not null and not placa_valida(v_cav) then raise exception 'Placa do cavalo inválida.' using errcode = '22023'; end if;
+  if v_car is not null and not placa_valida(v_car) then raise exception 'Placa da carreta inválida.' using errcode = '22023'; end if;
+  if v_cpf is not null and not cpf_valido(v_cpf) then raise exception 'CPF do motorista do caminhão inválido.' using errcode = '22023'; end if;
+  select * into v_cam from caminhoes_diesel where placa_cavalo = v_cav;
+  v_car := coalesce(v_car, v_cam.placa_carreta); v_mot := coalesce(v_mot, v_cam.motorista); v_cpf := coalesce(v_cpf, v_cam.cpf);
   if r ->> 'regua_antes' is not null and r ->> 'regua_depois' is not null then
     v_sub := (r ->> 'regua_depois')::numeric - (r ->> 'regua_antes')::numeric;
     if abs(v_sub - v_lt) > 20 then v_alerta := format('NF diz %s L, mas a régua subiu %s L.', fmt(v_lt), fmt(v_sub)); end if;
@@ -907,9 +938,7 @@ begin
                         placa_carreta, motorista, cpf, alerta, frentista_id, conta)
   values ((r ->> 'uuid')::uuid, upper(r ->> 'tanque'), date_trunc('second', (r ->> 'data_hora')::timestamp), trim(r ->> 'nf'),
           v_lt, (r ->> 'valor_total')::numeric, (r ->> 'regua_antes')::numeric, (r ->> 'regua_depois')::numeric,
-          nullif(normaliza_placa(r ->> 'placa_caminhao'), ''), nullif(normaliza_placa(r ->> 'placa_carreta'), ''),
-          left(r ->> 'motorista', 120), nullif(regexp_replace(coalesce(r ->> 'cpf', ''), '\D', '', 'g'), ''),
-          v_alerta, v_frent, meu_email())
+          v_cav, v_car, left(v_mot, 120), v_cpf, v_alerta, v_frent, meu_email())
   on conflict (uuid) do nothing
   returning id into v_id;
   if v_id is null then   -- mesmo envio gravado ao mesmo tempo por outra conexão
@@ -917,6 +946,13 @@ begin
     return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'alerta', v_ex.alerta);
   end if;
   perform registrar_fotos('chegada', v_id::text, p_fotos, v_frent);
+  if v_cav is not null then
+    insert into caminhoes_diesel (placa_cavalo, placa_carreta, motorista, cpf, criado_por)
+    values (v_cav, v_car, v_mot, v_cpf, 'Frentista: ' || (select nome from frentistas where id = v_frent))
+    on conflict (placa_cavalo) do update set placa_carreta = excluded.placa_carreta, motorista = excluded.motorista, cpf = excluded.cpf, ativo = true
+     where (caminhoes_diesel.placa_carreta, caminhoes_diesel.motorista, caminhoes_diesel.cpf, caminhoes_diesel.ativo)
+           is distinct from (excluded.placa_carreta, excluded.motorista, excluded.cpf, true);
+  end if;
   perform auditar('chegada.recebida', 'chegada', v_id::text,
                   jsonb_build_object('nf', r ->> 'nf', 'litros', v_lt, 'tanque', upper(r ->> 'tanque'), 'fotos', coalesce(cardinality(p_fotos), 0),
                                      'frentista', (select nome from frentistas where id = v_frent)));
@@ -1434,7 +1470,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['acessos', 'frentistas', 'frentistas_pin', 'sessoes_frentista', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques',
+  foreach t in array array['acessos', 'frentistas', 'frentistas_pin', 'sessoes_frentista', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'caminhoes_diesel',
                            'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'auditoria', 'configuracoes',
                            'relatorios_diarios'] loop
     execute format('alter table %I enable row level security', t);
@@ -1443,12 +1479,12 @@ begin
     execute format('drop policy if exists supervisor_edita on %I', t);
   end loop;
   -- Leitura pelo painel (PINs, sessões e auditoria têm regra própria)
-  foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'bombas',
+  foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'bombas', 'caminhoes_diesel',
                            'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'configuracoes', 'relatorios_diarios'] loop
     execute format('create policy supervisor_le on %I for select to authenticated using (sou_gestor())', t);
   end loop;
   -- Cadastros: supervisor e administrador editam direto (com histórico automático pelos gatilhos)
-  foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'bombas'] loop
+  foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'bombas', 'caminhoes_diesel'] loop
     execute format('create policy supervisor_edita on %I for all to authenticated using (sou_gestor()) with check (sou_gestor())', t);
   end loop;
 end $$;
