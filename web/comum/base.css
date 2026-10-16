@@ -1,81 +1,71 @@
-/* Base visual do painel e do app. Fontes IBM Plex empacotadas (sem depender de site externo).
-   Tema claro é o padrão; escuro por escolha da pessoa ou pelo aparelho ("automático"). */
-@font-face { font-family: "Plex Sans"; src: url("fontes/sans-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
-@font-face { font-family: "Plex Sans"; src: url("fontes/sans-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
-@font-face { font-family: "Plex Sans"; src: url("fontes/sans-600.woff2") format("woff2"); font-weight: 600; font-display: swap; }
-@font-face { font-family: "Plex Condensed"; src: url("fontes/cond-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
-@font-face { font-family: "Plex Condensed"; src: url("fontes/cond-600.woff2") format("woff2"); font-weight: 600; font-display: swap; }
-@font-face { font-family: "Plex Condensed"; src: url("fontes/cond-700.woff2") format("woff2"); font-weight: 700; font-display: swap; }
-@font-face { font-family: "Plex Mono"; src: url("fontes/mono-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
-@font-face { font-family: "Plex Mono"; src: url("fontes/mono-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
-@font-face { font-family: "Plex Mono"; src: url("fontes/mono-600.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+/* Base visual do painel e do app, no visual da Ritmo Logística: branco como base, azul Ritmo para o que está
+   selecionado e em foco, laranja Ritmo só no botão principal. Uma fonte (Roboto, empacotada). Sempre claro, como a marca. */
+@font-face { font-family: "Roboto"; src: url("fontes/roboto-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Roboto"; src: url("fontes/roboto-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "Roboto"; src: url("fontes/roboto-700.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+/* Títulos: a mesma Roboto, mas sempre no peso médio (os títulos antigos pediam 600/700; aqui ficam calmos) */
+@font-face { font-family: "Roboto Titulo"; src: url("fontes/roboto-500.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
 
 :root {
-  --chao: #f3f2ef; --placa: #ffffff; --placa-2: #f8f7f5; --risco: #e3e0da; --risco-forte: #cfcbc3;
-  --tinta: #1c1b19; --tinta-2: #57534d; --tinta-3: #8a857c;
-  --diesel: #b86a07; --diesel-fundo: #f6e6cc; --acao: #1c1b19; --acao-tinta: #ffffff;
-  --ok: #2f7a4f; --ok-fundo: #e2f0e7; --pend: #3b5f8a; --pend-fundo: #e4ebf4; --alerta: #b4421c; --alerta-fundo: #f7e3da;
-  --hora: #6b4fa0; --hora-fundo: #ece6f6;
-  --lado: #fbfaf8; --lado-tinta: #2b2925; --lado-tinta-2: #8a857c; --lado-ativo: #efece6; --lado-forte: #1c1b19; --lado-borda: #e3e0da;
-  --lado-controle: #efece6; --lado-controle-ativo: #ffffff; --lado-qtd: #f6e6cc; --lado-qtd-tinta: #8a5205; --lado-qtd-alerta: #f7e3da; --lado-qtd-alerta-tinta: #b4421c;
-  --f-texto: "Plex Sans", "Segoe UI", Roboto, system-ui, sans-serif;
-  --f-titulo: "Plex Condensed", "Arial Narrow", "Plex Sans", system-ui, sans-serif;
-  --f-num: "Plex Mono", ui-monospace, Consolas, monospace;
+  --chao: #ffffff; --placa: #ffffff; --placa-2: #f5f7fa; --risco: #e3e8ef; --risco-forte: #cdd5e0;
+  --tinta: #18212e; --tinta-2: #566173; --tinta-3: #8792a2;
+  /* "diesel" = cor de seleção (azul Ritmo); "acao" = botão principal (laranja Ritmo) */
+  --diesel: #0053a7; --diesel-fundo: #e8f1fb; --acao: #ea7d00; --acao-tinta: #ffffff; --acao-forte: #c96b00;
+  --azul: #0053a7; --azul-fundo: #e8f1fb; --marinho: #003772; --laranja: #ea7d00; --laranja-texto: #b45f00;
+  --ok: #1e7d45; --ok-fundo: #e6f4ec; --pend: #0053a7; --pend-fundo: #e8f1fb; --alerta: #c62828; --alerta-fundo: #fdecea;
+  --hora: #6a3fa8; --hora-fundo: #f0eafa;
+  --lado: #ffffff; --lado-tinta: #18212e; --lado-tinta-2: #8792a2; --lado-ativo: #e8f1fb; --lado-forte: #0053a7; --lado-borda: #e3e8ef;
+  --lado-controle: #f5f7fa; --lado-controle-ativo: #ffffff; --lado-qtd: #e8f1fb; --lado-qtd-tinta: #0053a7; --lado-qtd-alerta: #fdecea; --lado-qtd-alerta-tinta: #c62828;
+  --f-texto: "Roboto", "Segoe UI", system-ui, sans-serif;
+  --f-titulo: "Roboto Titulo", "Roboto", "Segoe UI", system-ui, sans-serif;
+  --f-num: "Roboto", "Segoe UI", system-ui, sans-serif;
   color-scheme: light;
 }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --chao: #141312; --placa: #1c1b19; --placa-2: #211f1d; --risco: #2e2c29; --risco-forte: #3d3a36;
-  --tinta: #ece9e3; --tinta-2: #b3ada3; --tinta-3: #8a857c; --diesel: #e59a2f; --diesel-fundo: #3a2a12;
-  --acao: #ece9e3; --acao-tinta: #141312; --ok: #6cc18f; --ok-fundo: #1b3326; --pend: #8db1de; --pend-fundo: #1d2a3a;
-  --alerta: #ef8a63; --alerta-fundo: #3b2219; --hora: #b9a3e6; --hora-fundo: #2a2238;
-  --lado: #0f0e0d; --lado-tinta: #d9d5cd; --lado-tinta-2: #7d786f; --lado-ativo: #24221f; --lado-forte: #ffffff; --lado-borda: #2a2825;
-  --lado-controle: #24221f; --lado-controle-ativo: #3a3733; --lado-qtd: #3a2a12; --lado-qtd-tinta: #f0b55c; --lado-qtd-alerta: #3b2219; --lado-qtd-alerta-tinta: #ef8a63;
-  color-scheme: dark } }
-:root[data-theme="dark"] {
-  --chao: #141312; --placa: #1c1b19; --placa-2: #211f1d; --risco: #2e2c29; --risco-forte: #3d3a36;
-  --tinta: #ece9e3; --tinta-2: #b3ada3; --tinta-3: #8a857c; --diesel: #e59a2f; --diesel-fundo: #3a2a12;
-  --acao: #ece9e3; --acao-tinta: #141312; --ok: #6cc18f; --ok-fundo: #1b3326; --pend: #8db1de; --pend-fundo: #1d2a3a;
-  --alerta: #ef8a63; --alerta-fundo: #3b2219; --hora: #b9a3e6; --hora-fundo: #2a2238;
-  --lado: #0f0e0d; --lado-tinta: #d9d5cd; --lado-tinta-2: #7d786f; --lado-ativo: #24221f; --lado-forte: #ffffff; --lado-borda: #2a2825;
-  --lado-controle: #24221f; --lado-controle-ativo: #3a3733; --lado-qtd: #3a2a12; --lado-qtd-tinta: #f0b55c; --lado-qtd-alerta: #3b2219; --lado-qtd-alerta-tinta: #ef8a63;
-  color-scheme: dark }
 
 * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--risco-forte) transparent; }
 html, body { margin: 0; }
-body { background: var(--chao); color: var(--tinta); font: 400 14px/1.45 var(--f-texto); -webkit-font-smoothing: antialiased; }
+body { background: var(--chao); color: var(--tinta); font: 400 14px/1.45 var(--f-texto); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
 h1, h2, h3, h4 { font-family: var(--f-titulo); line-height: 1.15; margin: 0; text-wrap: balance; }
 button, input, select, textarea { font: inherit; color: inherit; }
-input, select, textarea { background: var(--placa); border: 1px solid var(--risco-forte); border-radius: 8px; padding: 9px 11px; width: 100%; min-height: 42px; }
-input:focus, select:focus, textarea:focus { border-color: var(--tinta-3); }
+input, select, textarea { background: var(--placa); border: 1px solid var(--risco-forte); border-radius: 6px; padding: 9px 11px; width: 100%; min-height: 44px; }
+input:focus, select:focus, textarea:focus { border-color: var(--azul); box-shadow: inset 0 0 0 1px var(--azul); outline: none; }
 input.num { font-family: var(--f-num); font-variant-numeric: tabular-nums; }
-:focus-visible { outline: 2px solid var(--diesel); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--azul); outline-offset: 2px; }
 .num { font-family: var(--f-num); font-variant-numeric: tabular-nums; }
-.lbl { font: 600 10.5px var(--f-titulo); letter-spacing: .1em; text-transform: uppercase; color: var(--tinta-3); }
+.lbl { font: 500 12.5px var(--f-texto); color: var(--tinta-2); }
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .hint { font-size: 12.5px; color: var(--tinta-3); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 a { color: var(--tinta-2); }
 
-.btn { min-height: 42px; border-radius: 8px; border: 1px solid var(--acao); padding: 0 16px; cursor: pointer; font: 600 14px var(--f-texto);
+.btn { min-height: 44px; border-radius: 6px; border: 1px solid var(--acao); padding: 0 18px; cursor: pointer; font: 500 14.5px var(--f-texto);
   background: var(--acao); color: var(--acao-tinta); }
-.btn.ghost { background: var(--placa); color: var(--tinta); border-color: var(--risco-forte); }
-.btn.ghost:hover { border-color: var(--tinta-3); }
+.btn:hover { background: var(--acao-forte); border-color: var(--acao-forte); }
+.btn.ghost { background: var(--placa); color: var(--azul); border-color: var(--risco-forte); }
+.btn.ghost:hover { background: var(--azul-fundo); border-color: var(--azul); }
 .btn.warn { background: var(--alerta); border-color: var(--alerta); color: #fff; }
+.btn.warn:hover { background: #a71f1f; border-color: #a71f1f; }
 .btn.small { min-height: 34px; padding: 0 12px; font-size: 13px; }
-.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:disabled, .btn:disabled:hover { background: var(--placa-2); border-color: var(--risco); color: var(--tinta-3); cursor: not-allowed; }
 
-.pill, .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; padding: 2px 9px 2px 7px; border-radius: 999px; white-space: nowrap; }
+/* Situação: bolinha de cor + texto, sem etiqueta colorida */
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500; white-space: nowrap; color: var(--tinta-2); }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+.pill.Pronto { color: var(--ok); }
+.pill.Em-lote, .pill.Lançado { color: var(--azul); }
+.pill.Exceção, .pill.Erro { color: var(--alerta); }
+.pill.Aguardando-autorização { color: var(--laranja-texto); }
+.pill.Cancelado { color: var(--tinta-3); text-decoration: line-through; }
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; padding: 2px 8px; border-radius: 4px; white-space: nowrap;
+  background: var(--placa-2); color: var(--tinta-2); }
 .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.pill.Pronto, .chip.neutro { background: var(--placa-2); color: var(--tinta-2); box-shadow: inset 0 0 0 1px var(--risco); }
-.pill.Em-lote, .chip.pend { background: var(--pend-fundo); color: var(--pend); }
-.pill.Lançado, .chip.ok { background: var(--ok-fundo); color: var(--ok); }
-.pill.Exceção, .chip.alerta { background: var(--alerta-fundo); color: var(--alerta); }
-.pill.Erro { background: var(--alerta); color: #fff; }
-.pill.Cancelado { background: var(--placa-2); color: var(--tinta-3); text-decoration: line-through; }
-.pill.Aguardando-autorização, .chip.diesel { background: var(--diesel-fundo); color: var(--diesel); }
+.chip.neutro { background: var(--placa-2); color: var(--tinta-2); }
+.chip.pend, .chip.diesel { background: var(--azul-fundo); color: var(--azul); }
+.chip.ok { background: var(--ok-fundo); color: var(--ok); }
+.chip.alerta { background: var(--alerta-fundo); color: var(--alerta); }
 .chip.hora { background: var(--hora-fundo); color: var(--hora); }
 
-.toast { border-radius: 8px; padding: 10px 12px; font-weight: 500; font-size: 13.5px; }
+.toast { border-radius: 6px; padding: 10px 12px; font-weight: 500; font-size: 13.5px; }
 .toast.ok { background: var(--ok-fundo); color: var(--ok); }
 .toast.warn { background: var(--alerta-fundo); color: var(--alerta); }
 .toast.info { background: var(--pend-fundo); color: var(--pend); }

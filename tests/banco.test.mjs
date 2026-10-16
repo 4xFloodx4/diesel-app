@@ -19,7 +19,7 @@ const SUPABASE = `
   alter default privileges in schema public grant all on functions to anon, authenticated;
   alter default privileges in schema public grant all on sequences to anon, authenticated;
 `;
-const POSTO = 'posto1@empresa.com', CHEFE = 'chefe@empresa.com', ESTRANHO = 'qualquer@gmail.com', DONO = 'dono@empresa.com';
+const POSTO = 'posto1@empresa.com', CHEFE = 'chefe@empresa.com', ESTRANHO = 'qualquer@gmail.com', DONO = 'dono@empresa.com', DEV = 'dev@empresa.com';
 let db, base, ana, carlos, sessao;
 
 // Executa como um usuário logado (papel authenticated + claims do JWT), igual ao PostgREST do Supabase
@@ -61,7 +61,7 @@ before(async () => {
   await db.exec(SCHEMA);   // rodar de novo não pode dar erro (atualização do schema)
   await db.exec(`
     insert into acessos (email, nome, papel) values ('${POSTO}', 'Celular posto 1', 'posto'), ('${CHEFE}', 'Chefe', 'supervisor'),
-                                                    ('${DONO}', 'Dono', 'administrador');
+                                                    ('${DONO}', 'Dono', 'administrador'), ('${DEV}', 'Dev', 'desenvolvedor');
     insert into frentistas (nome) values ('Ana Ribeiro'), ('Carlos Mendes');
     insert into tanques values ('TQ01', 30000, 12000);
     insert into bombas values (1, 'TQ01', 7071046, true), (2, 'TQ01', 512000, true);   -- 1 tanque, 2 bombas
@@ -479,28 +479,42 @@ test('supervisor gerencia frentistas e cadastros', async () => {
   await assert.rejects(como(CHEFE, "insert into motoristas (nome, cpf) values ('Fulano', '111.111.111-11')"), /check constraint/);
 });
 
-test('supervisor só gerencia contas de celular; administradores só pelo dono do projeto', async () => {
-  await como(CHEFE, "insert into acessos (email, nome, papel) values ('posto9@empresa.com', 'Celular 9', 'posto')");
-  assert.equal((await como(CHEFE, "delete from acessos where email = 'posto9@empresa.com' returning email")).length, 1);
-  await assert.rejects(como(CHEFE, "insert into acessos (email, nome, papel) values ('sup2@empresa.com', 'Sup 2', 'supervisor')"), /só gerencia contas de celular/);
-  await assert.rejects(como(CHEFE, `update acessos set papel = 'posto' where email = '${CHEFE}'`), /só gerencia contas de celular/);
-  await assert.rejects(como(CHEFE, `delete from acessos where email = '${DONO}'`), /dono do projeto/);
-  // administrador: gerencia supervisores e celulares, mas não mexe em administrador (nem em si mesmo)
-  await como(DONO, "insert into acessos (email, nome, papel) values ('sup2@empresa.com', 'Sup 2', 'supervisor')");
-  assert.equal((await como(DONO, "delete from acessos where email = 'sup2@empresa.com' returning email")).length, 1);
-  await assert.rejects(como(DONO, `update acessos set ativo = false where email = '${DONO}'`), /dono do projeto/);
-  await assert.rejects(como(DONO, "insert into acessos (email, nome, papel) values ('x@empresa.com', 'X', 'administrador')"), /dono do projeto/);
-  // dono do projeto (SQL Editor, sem login) pode
+test('contas: só administrador ou desenvolvedor liberam celular e supervisor; administrador só o desenvolvedor; desenvolvedor só pelo SQL', async () => {
+  // supervisor não mexe em conta nenhuma
+  await assert.rejects(como(CHEFE, "insert into acessos (email, nome, papel) values ('posto9@empresa.com', 'Celular 9', 'posto')"), /Só o administrador libera/);
+  await assert.rejects(como(CHEFE, `update acessos set nome = 'Eu' where email = '${CHEFE}'`), /Só o administrador libera/);
+  await assert.rejects(como(CHEFE, `delete from acessos where email = '${DONO}'`), /Só o desenvolvedor/);
+  // administrador: celulares e supervisores, mas não administradores (nem ele mesmo) nem desenvolvedores
+  await como(DONO, "insert into acessos (email, nome, papel) values ('posto9@empresa.com', 'Celular 9', 'posto'), ('sup2@empresa.com', 'Sup 2', 'supervisor')");
+  assert.equal((await como(DONO, "delete from acessos where email in ('posto9@empresa.com', 'sup2@empresa.com') returning email")).length, 2);
+  await assert.rejects(como(DONO, `update acessos set ativo = false where email = '${DONO}'`), /Só o desenvolvedor/);
+  await assert.rejects(como(DONO, "insert into acessos (email, nome, papel) values ('x@empresa.com', 'X', 'administrador')"), /Só o desenvolvedor/);
+  await assert.rejects(como(DONO, `update acessos set ativo = false where email = '${DEV}'`), /dono do projeto/);
+  // desenvolvedor: cria e remove administrador; outro desenvolvedor (ou ele mesmo) só pelo SQL
+  await como(DEV, "insert into acessos (email, nome, papel) values ('adm2@empresa.com', 'Adm 2', 'administrador')");
+  assert.equal((await como(DEV, "delete from acessos where email = 'adm2@empresa.com' returning email")).length, 1);
+  await assert.rejects(como(DEV, "insert into acessos (email, nome, papel) values ('dev2@empresa.com', 'Dev 2', 'desenvolvedor')"), /dono do projeto/);
+  await assert.rejects(como(DEV, `update acessos set papel = 'administrador' where email = '${DEV}'`), /dono do projeto/);
+  // dono do projeto (SQL Editor, sem login) pode tudo
   await db.exec(`update acessos set nome = 'Dono da empresa' where email = '${DONO}'`);
 });
 
-test('supervisor vê a auditoria, menos as ações de administradores', async () => {
+test('desenvolvedor pode tudo o que o administrador pode; o horário do turno é do administrador para cima', async () => {
+  assert.equal((await rpc(DEV, 'estado_posto')).papel, 'desenvolvedor');
+  assert.equal((await como(DEV, "update configuracoes set abertura = '00:00' where id = 1 returning id")).length, 1);
+  assert.equal((await como(CHEFE, "update configuracoes set abertura = '00:00' where id = 1 returning id")).length, 0);
+  await assert.rejects(rpc(POSTO, 'gerar_lote'), /Acesso negado/);
+});
+
+test('histórico: cada cargo vê o próprio nível e os de baixo; o administrador também vê o desenvolvedor', async () => {
   await rpc(DONO, 'definir_pin', { p_frentista_id: ana, p_pin: '5820' });
-  assert.ok((await como(DONO, "select acao from auditoria where papel = 'administrador'")).length > 0);
-  const vistoPeloChefe = await como(CHEFE, 'select acao, papel from auditoria');
-  assert.ok(vistoPeloChefe.length > 0);
-  assert.ok(vistoPeloChefe.every(a => a.papel !== 'administrador'));
-  assert.ok(vistoPeloChefe.some(a => a.papel === 'posto'));       // vê o que foi feito pelos celulares
+  await rpc(DEV, 'definir_pin', { p_frentista_id: carlos, p_pin: '5831' });
+  const papeis = async email => new Set((await como(email, 'select papel from auditoria')).map(a => a.papel));
+  const chefe = await papeis(CHEFE), dono = await papeis(DONO), dev = await papeis(DEV);
+  assert.ok(chefe.has('posto') && !chefe.has('administrador') && !chefe.has('desenvolvedor'));
+  assert.ok(dono.has('administrador') && dono.has('desenvolvedor') && dono.has('posto'));
+  assert.ok(dev.has('administrador') && dev.has('desenvolvedor'));
+  // o PIN que o desenvolvedor trocou derrubou o login do Carlos; o teste segue com a Ana
 });
 
 test('supervisor anexa foto a um veículo pelo painel; celular não pode', async () => {

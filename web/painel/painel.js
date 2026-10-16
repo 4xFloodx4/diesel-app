@@ -19,7 +19,8 @@ aplicarTema();
 const URL_APP = __ALVO__ === 'android' ? '../index.html' : '../app/';
 const $ = id => document.getElementById(id);
 const trabalho = $('trabalho');
-const NOME_PAPEL = { posto: 'Celular do posto', supervisor: 'Supervisor', administrador: 'Administrador' };
+const NOME_PAPEL = { posto: 'Celular do posto', supervisor: 'Supervisor', administrador: 'Administrador', desenvolvedor: 'Desenvolvedor' };
+const NIVEL = { supervisor: 1, administrador: 2, desenvolvedor: 3 };   // cada cargo pode tudo o que o de baixo pode
 const STATUS_DECISAO = ['Aguardando autorização', 'Exceção', 'Erro'];
 const TODOS_STATUS = ['Aguardando autorização', 'Pronto', 'Exceção', 'Em lote', 'Lançado', 'Erro', 'Cancelado'];
 
@@ -28,8 +29,11 @@ const est = {
   filtros: { de: '', ate: '', status: '', placa: '' }, aud: { filtro: 'todos', busca: '', eventos: [], ctx: {} },
   guia: 'supervisor', turno: { abertura: '05:00', fechamento: '23:00' }, cad: null, carregando: 0,
 };
-const souAdmin = () => est.papel === 'administrador';
-const demo = () => souAdmin() && demoLigado();
+const souAdmin = () => (NIVEL[est.papel] || 0) >= 2;   // administrador ou desenvolvedor
+const souDev = () => est.papel === 'desenvolvedor';
+const demo = () => souDev() && demoLigado();
+// Item do menu: i[3] = 'admin' (administrador para cima) ou 'dev' (só desenvolvedor)
+const podeVer = i => !i[3] || (i[3] === 'dev' ? souDev() : souAdmin());
 const pill = s => `<span class="pill ${esc(classeStatus(s))}">${esc(s)}</span>`;
 const placa = p => `<span class="placa">${esc(p)}</span>`;
 const mascaraCpf = c => c ? `***.***.${esc(c.slice(6, 9))}-${esc(c.slice(9))}` : '';
@@ -74,7 +78,7 @@ async function mostrarLogin(msg) {
   $('lado').innerHTML = '';
   const conta = await contaAtual();
   trabalho.innerHTML = `<div class="entrada"><div class="cartao">
-    <div class="marca marca-entrada">${LOGO}<div><b>Diesel</b><span>Painel do supervisor</span></div></div>
+    <div class="marca marca-entrada">${LOGO}<div><b>Abastecimento</b><span>Painel do diesel</span></div></div>
     <h1>${conta ? 'Conta sem acesso ao painel' : 'Entrar no painel'}</h1>
     ${conta ? `<p>Conectado como <b>${esc(conta)}</b>.</p>` : '<p>Entre com a sua conta Google de supervisor ou administrador.</p>'}
     ${msg ? `<div class="toast warn">${esc(msg)}</div>` : ''}
@@ -97,23 +101,22 @@ async function iniciarAgora() {
     if (nativo) { location.replace(URL_APP); return; }
     return mostrarLogin('Esta conta é de um celular do posto. Ela usa o app do frentista, não o painel.');
   }
-  if (papel !== 'supervisor' && papel !== 'administrador') return mostrarLogin('Esta conta não está liberada. Peça ao administrador.');
+  if (!NIVEL[papel]) return mostrarLogin('Esta conta não está liberada. Peça ao administrador.');
   est.papel = papel; est.conta = conta;
   const eu = await chamar(() => consulta(supabase.from('acessos').select('nome').eq('email', conta).maybeSingle()));
   est.nome = eu?.nome || conta;
   const cfg = await chamar(() => consulta(supabase.from('configuracoes').select('abertura, fechamento').eq('id', 1).maybeSingle()));
   if (cfg) est.turno = { abertura: String(cfg.abertura).slice(0, 5), fechamento: String(cfg.fechamento).slice(0, 5) };
   $('app').classList.remove('sem-menu');
-  if (!MENU.some(([, itens]) => itens.some(i => i[0] === est.tela && (!i[3] || souAdmin())))) est.tela = 'resumo';
+  if (!MENU.some(([, itens]) => itens.some(i => i[0] === est.tela && podeVer(i)))) est.tela = 'resumo';
   montarMenu();
   abrir(est.tela);
 }
 
 // ---------- Menu lateral ----------
 const svg = d => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
-const LOGO = `<svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" rx="7" fill="#b86a07"/>
-  <rect x="8" y="6.5" width="10.5" height="17" rx="1.6" fill="#fff"/><rect x="9.8" y="8.6" width="6.9" height="4.4" rx=".8" fill="#b86a07"/>
-  <path d="M18.5 17.5h3.4V10" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/><rect x="6.6" y="22.6" width="13.4" height="1.9" rx=".9" fill="#fff"/></svg>`;
+// Logo original do site da Ritmo (no APK o painel fica em painel/, no site também: o logo está em ../comum/)
+const LOGO = '<img class="logo-ritmo" src="../comum/logo-ritmo.jpg" alt="Ritmo Logística" width="100" height="40">';
 const IC = {
   grade: '<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/>',
   lista: '<path d="M2 4h12M2 8h8M2 12h5"/>', doc: '<path d="M3 2h10v12H3zM6 5h4M6 8h4M6 11h2"/>', gota: '<path d="M8 2s4 4.6 4 7.5a4 4 0 0 1-8 0C4 6.6 8 2 8 2z"/>',
@@ -123,22 +126,22 @@ const IC = {
   turno: '<path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2"/><circle cx="8" cy="8" r="3"/>',
   ajuda: '<circle cx="8" cy="8" r="6"/><path d="M6.3 6.2a1.8 1.8 0 1 1 2.6 1.6c-.6.3-.9.7-.9 1.3M8 11.4v.1"/>',
 };
-// [id, rótulo, ícone, só administrador]
+// [id, rótulo, ícone, quem vê: nada = todos do painel, 'admin' = administrador para cima, 'dev' = só desenvolvedor]
 const MENU = [
   ['Operação', [['resumo', 'Visão do dia', 'grade'], ['decisoes', 'Decisões', 'lista'], ['abastecimentos', 'Abastecimentos', 'doc'], ['tanques', 'Tanques e fechamentos', 'gota']]],
   ['KMM', [['lotes', 'Lotes', 'kmm']]],
   ['Cadastros', [['frentistas', 'Frentistas', 'pessoa'], ['veiculos', 'Veículos e motoristas', 'caminhao']]],
-  ['Sistema', [['acessos', 'Acessos', 'cadeado'], ['auditoria', 'Auditoria', 'historico'], ['turno', 'Horário do turno', 'turno', true]]],
+  ['Sistema', [['acessos', 'Acessos', 'cadeado', 'admin'], ['auditoria', 'Histórico', 'historico'], ['turno', 'Horário do turno', 'turno', 'admin']]],
   ['Ajuda', [['guia', 'Guia de uso', 'ajuda']]],
 ];
 const TITULO = Object.fromEntries(MENU.flatMap(([, itens]) => itens.map(i => [i[0], i[1]])));
 
 function montarMenu() {
-  $('lado').innerHTML = `<div class="marca">${LOGO}<div><b>Diesel</b><span>Posto interno</span></div></div>
-    ${MENU.map(([grupo, itens]) => `<div class="grupo"><h4>${grupo}</h4>${itens.filter(i => !i[3] || souAdmin()).map(([id, rot, ic]) =>
+  $('lado').innerHTML = `<div class="marca">${LOGO}</div>
+    ${MENU.map(([grupo, itens]) => [grupo, itens.filter(podeVer)]).filter(([, itens]) => itens.length).map(([grupo, itens]) => `<div class="grupo"><h4>${grupo}</h4>${itens.map(([id, rot, ic]) =>
       `<button type="button" class="item" data-tela="${id}">${svg(IC[ic])}${rot}<span class="qtd num" data-qtd="${id}" hidden></span></button>`).join('')}</div>`).join('')}
     <div class="conta"><div><b>${esc(est.nome)}</b>${NOME_PAPEL[est.papel]}${est.nome !== est.conta ? `<br>${esc(est.conta)}` : ''}</div>
-      <div class="ajustes"><span class="rot">Tema</span>${htmlTema()}${souAdmin() ? htmlChaveDemo() : ''}</div>
+      ${souDev() ? `<div class="ajustes">${htmlChaveDemo()}</div>` : ''}
       <button type="button" class="sair" id="sair">Sair da conta</button></div>`;
   marcarMenu();
 }
@@ -715,12 +718,14 @@ function editarCadastro(tabela, id) {
 
 // ---------- Acessos (contas Google) ----------
 TELAS.acessos = async () => {
+  if (!souAdmin()) return TELAS.resumo();   // contas: administrador para cima
   const lista = await carregar(() => consulta(supabase.from('acessos').select('*').order('papel').order('nome')), d => d.acessos);
   if (!lista) return;
-  const podeMexer = a => a.papel === 'posto' || (souAdmin() && a.papel === 'supervisor');
+  // Celular e supervisor: administrador ou desenvolvedor. Administrador: só o desenvolvedor. Desenvolvedor: só pelo SQL.
+  const podeMexer = a => ['posto', 'supervisor'].includes(a.papel) ? souAdmin() : a.papel === 'administrador' && souDev();
   const acoes = a => {
-    if (a.papel === 'administrador') return '<span class="hint">Protegido</span>';
-    if (!podeMexer(a)) return '<span class="hint">Só o administrador altera</span>';
+    if (a.papel === 'desenvolvedor') return '<span class="hint">Só pelo Supabase</span>';
+    if (!podeMexer(a)) return '<span class="hint">Só o desenvolvedor altera</span>';
     return `<div class="acoes">${botaoAtivo('acessos', 'email', a.email, 'ativo', a.ativo).replace('Desativar', 'Bloquear').replace('Reativar', 'Liberar')}
       <button class="btn small warn" type="button" data-acao="excluir" data-tabela="acessos" data-chave="email" data-id="${esc(a.email)}">Excluir</button></div>`;
   };
@@ -728,10 +733,10 @@ TELAS.acessos = async () => {
     <section class="painel"><header><h2>Liberar uma conta Google</h2></header><div class="corpo">
       <form class="formulario" data-form="acessos">
         ${campo('E-mail da conta Google', 'email', 'type="email" required autocomplete="off"')}${campo('Nome', 'nome', 'required maxlength="120" placeholder="Ex.: Celular posto 1"')}
-        ${rotulo('Tipo', `<select name="papel"><option value="posto">Celular do posto</option>${souAdmin() ? '<option value="supervisor">Supervisor</option>' : ''}</select>`)}
+        ${rotulo('Tipo', `<select name="papel"><option value="posto">Celular do posto</option><option value="supervisor">Supervisor</option>${souDev() ? '<option value="administrador">Administrador</option>' : ''}</select>`)}
         ${simNao('Ativo', 'ativo')}<button class="btn small" type="submit">Salvar</button></form>
-      <p class="hint">${souAdmin() ? 'Como administrador, você libera celulares do posto e supervisores.' : 'Você libera e bloqueia celulares do posto. Supervisores são liberados pelo administrador.'}
-        Contas de administrador não podem ser criadas, alteradas ou removidas pelo painel.</p></div></section>
+      <p class="hint">${souDev() ? 'Como desenvolvedor, você libera celulares do posto, supervisores e administradores.' : 'Você libera celulares do posto e supervisores. Administradores são liberados pelo desenvolvedor.'}
+        Contas de desenvolvedor só são criadas pelo Supabase (arquivo supabase/uma-vez/virar-desenvolvedor.sql).</p></div></section>
     <section class="painel"><header><h2>Contas liberadas</h2><span>celular perdido ou roubado: bloqueie na hora</span></header>
       <div class="tabela"><table><thead><tr><th>Nome</th><th>Tipo</th><th>Situação</th><th></th></tr></thead><tbody>
       ${lista.map(a => `<tr><td>${esc(a.nome)}${a.email === est.conta ? ' <span class="hint">(você)</span>' : ''}<span class="sub">${esc(a.email)}</span></td><td>${NOME_PAPEL[a.papel] || esc(a.papel)}</td>
@@ -756,7 +761,7 @@ TELAS.auditoria = async () => {
       nativo ? '' : '<button class="btn small ghost" type="button" data-acao="exportar-auditoria">Exportar para Excel</button>')}
     ${htmlFiltroAud(est.aud.filtro, est.aud.busca)}
     <div id="aud-resultado" class="aud-resultado">${htmlAuditoria(est.aud.eventos, est.aud.ctx, est.aud.filtro, est.aud.busca)}</div>
-    <p class="hint">Últimos 500 registros. O histórico não pode ser alterado nem apagado.${souAdmin() ? ' Supervisores não veem as ações de administradores.' : ' Ações de administradores não aparecem aqui.'}</p>`;
+    <p class="hint">Últimos 500 registros. O histórico não pode ser alterado nem apagado.${souAdmin() ? ' Supervisores não veem as ações de administradores e do desenvolvedor.' : ' Ações de administradores e do desenvolvedor não aparecem aqui.'}</p>`;
 };
 function exportarAuditoria() {
   const texto = html => new DOMParser().parseFromString(html, 'text/html').body.textContent.replace(/\s+/g, ' ').trim();
@@ -824,7 +829,7 @@ trabalho.addEventListener('submit', async e => {
   for (const k of ['ativo', 'ativa']) if (k in d) d[k] = d[k] === 'true';
   if ('cpf' in d) d.cpf = soDigitos(d.cpf);
   if (tabela === 'motoristas') d.nome = d.nome.trim().toUpperCase();
-  if (tabela === 'acessos') { d.email = d.email.trim().toLowerCase(); d.nome = d.nome.trim(); if (!souAdmin()) d.papel = 'posto'; }
+  if (tabela === 'acessos') { d.email = d.email.trim().toLowerCase(); d.nome = d.nome.trim(); if (d.papel === 'administrador' && !souDev()) d.papel = 'supervisor'; }
   if (tabela === 'veiculos') d.placa = d.placa.toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (tabela === 'tanques') d.codigo = d.codigo.trim().toUpperCase();
   for (const [k, v] of Object.entries(d)) if (typeof v === 'number' && Number.isNaN(v)) { avisar('Confira os números digitados.', 'warn'); return; }
@@ -842,7 +847,7 @@ trabalho.addEventListener('submit', async e => {
 document.addEventListener('click', async e => {
   const t = s => e.target.closest(s);
   if (t('[data-tema]')) { definirTema(t('[data-tema]').dataset.tema); return; }
-  if (t('[data-demo-alternar]')) { if (!souAdmin()) return; alternarDemo(); montarMenu(); abrir(est.tela); return; }
+  if (t('[data-demo-alternar]')) { if (!souDev()) return; alternarDemo(); montarMenu(); abrir(est.tela); return; }
   if (t('#sair')) { est.conta = null; await sair(); mostrarLogin('Você saiu.'); return; }
   const item = t('.item[data-tela]');
   if (item) { if (suprimirClique) return; fecharMenuSeEstreito(); abrir(item.dataset.tela); return; }

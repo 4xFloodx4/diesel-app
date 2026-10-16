@@ -4,11 +4,13 @@
 -- Como aplicar: Supabase > SQL Editor > cole este arquivo inteiro > Run.
 -- Pode ser rodado de novo: cria o que falta e atualiza funções e regras sem apagar dados.
 --
--- Quem é quem:
---  * administrador: tudo no painel. Só o dono do projeto (SQL Editor) cria, altera ou remove administradores.
---  * supervisor:    painel; gerencia frentistas, cadastros e contas de celular; autoriza lançamentos;
---                   vê a auditoria, menos as ações de administradores.
+-- Quem é quem (cada cargo pode tudo o que o de baixo pode):
+--  * desenvolvedor: tudo, inclusive criar administradores e mexer no banco pelo painel. Outro desenvolvedor só pelo
+--                   SQL Editor do Supabase (dono do projeto).
+--  * administrador: o analista. Exporta o turno para o KMM, ajusta horário e regras, libera celulares e supervisores.
+--  * supervisor:    o dia a dia: decisões, cadastros, frentistas e PIN. Não libera contas.
 --  * posto:         conta Google do celular. Nele cada frentista entra com nome + PIN.
+--  No histórico, cada um vê o próprio nível e os de baixo; o administrador também vê o que o desenvolvedor fez.
 --
 -- Segurança:
 --  * Toda tabela tem RLS. Só contas Google cadastradas em "acessos" enxergam alguma coisa.
@@ -25,7 +27,13 @@ create table if not exists acessos (
   criado_em  timestamptz not null default now()
 );
 alter table acessos drop constraint if exists acessos_papel_check;
-alter table acessos add constraint acessos_papel_check check (papel in ('posto', 'supervisor', 'administrador'));
+alter table acessos add constraint acessos_papel_check check (papel in ('posto', 'supervisor', 'administrador', 'desenvolvedor'));
+
+-- Nível de cada cargo do painel (o celular do posto fica fora da escada: 0)
+create or replace function nivel_papel(p text) returns integer
+language sql immutable as $$
+  select case p when 'supervisor' then 1 when 'administrador' then 2 when 'desenvolvedor' then 3 else 0 end
+$$;
 
 create or replace function meu_email() returns text
 language sql stable set search_path = public as $$
@@ -42,16 +50,16 @@ $$;
 
 create or replace function sou_gestor() returns boolean
 language sql stable security definer set search_path = public as $$
-  select coalesce(meu_papel() in ('supervisor', 'administrador'), false)
+  select coalesce(nivel_papel(meu_papel()) >= 1, false)
 $$;
 
--- O administrador pode tudo que o supervisor pode
+-- Cargo acima pode tudo o que o de baixo pode: exigir(array['supervisor']) aceita supervisor, administrador e desenvolvedor
 create or replace function exigir(p_papeis text[]) returns text
 language plpgsql stable security definer set search_path = public as $$
 declare v_papel text := meu_papel();
+        v_min integer := (select min(nivel_papel(x)) from unnest(p_papeis) x where nivel_papel(x) > 0);
 begin
-  if v_papel is null or not (v_papel = any (p_papeis)
-                             or (v_papel = 'administrador' and 'supervisor' = any (p_papeis))) then
+  if v_papel is null or not (v_papel = any (p_papeis) or (v_min is not null and nivel_papel(v_papel) >= v_min)) then
     raise exception 'Acesso negado para %', coalesce(nullif(meu_email(), ''), 'usuário sem login')
       using errcode = '42501';
   end if;
@@ -375,7 +383,7 @@ create table if not exists auditoria (
   entidade_id  text,
   detalhes     jsonb
 );
-alter table auditoria add column if not exists papel text;   -- papel de quem fez (o supervisor não vê ações de administradores)
+alter table auditoria add column if not exists papel text;   -- cargo de quem fez (cada um vê o próprio nível e os de baixo)
 
 create or replace function auditar(p_acao text, p_entidade text, p_id text, p_detalhes jsonb) returns void
 language sql security definer set search_path = public as $$
@@ -411,21 +419,24 @@ begin
 end $$;
 
 -- Contas Google:
---  * administradores só pelo dono do projeto (SQL Editor do Supabase): ninguém no painel cria, altera ou remove;
---  * supervisor gerencia só contas de celular do posto; administrador gerencia supervisores e celulares.
+--  * desenvolvedor: só pelo dono do projeto (SQL Editor do Supabase); ninguém no painel cria, altera ou remove;
+--  * administrador: só o desenvolvedor cria, altera ou remove;
+--  * supervisor e celular do posto: administrador ou desenvolvedor. O supervisor não mexe em contas.
 create or replace function proteger_acessos() returns trigger
 language plpgsql security definer set search_path = public as $$
-declare v_papel text := meu_papel();
+declare v_papel text := meu_papel(); v_alvo text;
 begin
   if meu_email() = '' then return coalesce(new, old); end if;   -- SQL Editor: dono do projeto
-  if (tg_op <> 'INSERT' and old.papel = 'administrador') or (tg_op <> 'DELETE' and new.papel = 'administrador') then
-    raise exception 'Administradores só podem ser criados, alterados ou removidos pelo dono do projeto no Supabase.'
-      using errcode = '42501';
-  end if;
-  if v_papel is distinct from 'administrador'
-     and ((tg_op <> 'INSERT' and old.papel <> 'posto') or (tg_op <> 'DELETE' and new.papel <> 'posto')) then
-    raise exception 'O supervisor só gerencia contas de celular do posto.' using errcode = '42501';
-  end if;
+  foreach v_alvo in array array[case when tg_op <> 'INSERT' then old.papel end, case when tg_op <> 'DELETE' then new.papel end] loop
+    continue when v_alvo is null;
+    if v_alvo = 'desenvolvedor' then
+      raise exception 'Desenvolvedores só podem ser criados, alterados ou removidos pelo dono do projeto no Supabase.' using errcode = '42501';
+    elsif v_alvo = 'administrador' and v_papel is distinct from 'desenvolvedor' then
+      raise exception 'Só o desenvolvedor cria, altera ou remove administradores.' using errcode = '42501';
+    elsif nivel_papel(v_papel) < 2 then
+      raise exception 'Só o administrador libera ou bloqueia contas de celular e de supervisor.' using errcode = '42501';
+    end if;
+  end loop;
   return coalesce(new, old);
 end $$;
 
@@ -1351,16 +1362,16 @@ begin
   end loop;
 end $$;
 -- frentistas_pin e sessoes_frentista: sem política nenhuma (só as funções acessam)
--- Horário do turno: só o administrador altera
+-- Horário do turno: administrador ou desenvolvedor
 drop policy if exists admin_edita on configuracoes;
 create policy admin_edita on configuracoes for update to authenticated
-  using (meu_papel() = 'administrador') with check (meu_papel() = 'administrador');
+  using (nivel_papel(meu_papel()) >= 2) with check (nivel_papel(meu_papel()) >= 2);
 
--- Auditoria: o administrador vê tudo; o supervisor não vê as ações de administradores
+-- Histórico: cada um vê o próprio nível e os de baixo (celular conta como 0); o administrador também vê o desenvolvedor
 drop policy if exists supervisor_le on auditoria;
 drop policy if exists auditoria_le on auditoria;
 create policy auditoria_le on auditoria for select to authenticated
-  using (meu_papel() = 'administrador' or (meu_papel() = 'supervisor' and papel is distinct from 'administrador'));
+  using (sou_gestor() and (nivel_papel(meu_papel()) >= 2 or nivel_papel(papel) <= nivel_papel(meu_papel())));
 
 -- ---------- Storage: bucket privado "fotos" ----------
 do $$
@@ -1404,7 +1415,7 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frent
   gerar_lote(), linhas_lote(bigint), fechar_lote(bigint, text), reabrir_turno(date, text), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)
   to authenticated;
 -- As políticas RLS, as do Storage e os gatilhos chamam estas; precisam estar liberadas para quem está logado
-grant execute on function exigir(text[]), sou_gestor(), fora_do_turno(timestamp), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text),
+grant execute on function exigir(text[]), sou_gestor(), nivel_papel(text), fora_do_turno(timestamp), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text),
   placa_valida(text), cpf_valido(text), fmt(numeric), foto_valida(text, text), normalizar_cadastro(), auditar_cadastro(),
   bloquear_alteracao(), proteger_acessos(), proteger_foto()
   to authenticated;

@@ -1,7 +1,8 @@
 // App do frentista. O celular fica logado com a conta Google do posto; cada frentista entra com nome + PIN
 // e continua logado até tocar em "Trocar". Precisa de internet para lançar: nada fica guardado só no celular.
 // O banco confere tudo de novo; o resultado que vale é o dele.
-import { rpc, supabase, contaAtual, entrarComGoogle, aoVoltarDoLogin, sair } from '../comum/supa.js';
+import { rpc, supabase, contaAtual, entrarComGoogle, aoVoltarDoLogin, sair, nativo } from '../comum/supa.js';
+import { App } from '@capacitor/app';
 import { esc, nf, parseNum, hhmm, hojeISO, horaAgora, classeStatus, ler, gravar } from '../comum/util.js';
 import { tirarFoto, enviarFotos } from '../comum/fotos.js';
 import { vigiarAtualizacoes, situacaoAtualizacao, novidadeAplicada, confirmarAbertura } from '../comum/atualizacao.js';
@@ -189,19 +190,19 @@ async function executar(acao) {
 
 // ---------- Telas ----------
 const avisoHtml = () => aviso ? `<div class="toast ${aviso.tipo}" role="status">${esc(aviso.texto)}</div>` : '';
-const botaoEnviar = (acao, texto, pode, classe = '') =>
-  `<button class="btn ${classe}" type="button" data-acao="${acao}" ${pode && !enviando ? '' : 'disabled'}>${enviando ? 'Enviando…' : texto}</button>`;
+// Botão principal da tela: fica fixo no rodapé, sempre à vista; embaixo, o que ainda falta (quando falta)
+const botaoEnviar = (acao, texto, pode, classe = '', falta = '') =>
+  `<div class="acao-fixa"><button class="btn ${classe}" type="button" data-acao="${acao}" ${pode && !enviando ? '' : 'disabled'}>${enviando ? 'Enviando…' : texto}</button>
+    ${falta && !enviando ? `<small>${esc(falta)}</small>` : ''}</div>`;
 
-function blocoFotos(lista, dono, minimo = 0, maximo = MAX_FOTOS) {
-  return `<div class="field"><span class="lbl">${maximo === 1 ? 'Foto' : 'Fotos'}${minimo ? ' (obrigatória)' : ' (opcional)'}</span>
-    <div class="fotos">${lista.map((f, i) => `<figure><img src="${f.previa}" alt="Foto ${i + 1}"><button type="button" class="tirar" data-tirar="${dono}" data-i="${i}" aria-label="Remover foto">×</button></figure>`).join('')}
+function blocoFotos(lista, dono, minimo = 0, maximo = MAX_FOTOS, rotulo = maximo === 1 ? 'Foto' : 'Fotos') {
+  return `<div class="field"><span class="lbl">${esc(rotulo)}${minimo ? ' (obrigatória)' : ' (opcional)'}</span>
+    <div class="fotos${maximo === 1 ? ' uma' : ''}">${lista.map((f, i) => `<figure><img src="${f.previa}" alt="Foto ${i + 1}"><button type="button" class="tirar" data-tirar="${dono}" data-i="${i}" aria-label="Remover foto">×</button></figure>`).join('')}
       ${lista.length < maximo ? `<button type="button" class="nova-foto" data-foto="${dono}">+ Tirar foto</button>` : ''}</div></div>`;
 }
 
-const MARCA = `<svg class="marca" viewBox="0 0 72 72" aria-hidden="true"><rect width="72" height="72" rx="18" fill="#b86a07"/>
-  <rect x="19" y="15" width="25" height="41" rx="4" fill="#fff"/><rect x="23.5" y="20" width="16" height="10.5" rx="2" fill="#b86a07"/>
-  <path d="M44 42h8V24" stroke="#fff" stroke-width="3.6" fill="none" stroke-linecap="round"/><path class="gota" d="M52 24c0 0-3 3.5-3 5.5a3 3 0 0 0 6 0C55 27.5 52 24 52 24z" fill="#f6e6cc"/>
-  <rect x="15" y="54" width="32" height="4.5" rx="2.2" fill="#fff"/></svg>`;
+const LOGO_RITMO = __ALVO__ === 'android' ? 'comum/logo-ritmo.jpg' : '../comum/logo-ritmo.jpg';
+const MARCA = `<img class="marca" src="${LOGO_RITMO}" alt="Ritmo Logística" width="125" height="50">`;
 const G = `<svg class="g" viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.6 9.2c0-.6-.1-1.2-.2-1.8H9v3.4h4.8a4.1 4.1 0 0 1-1.8 2.7v2.2h2.9c1.7-1.6 2.7-3.9 2.7-6.5z"/><path fill="#34A853" d="M9 18c2.4 0 4.5-.8 6-2.2l-2.9-2.2c-.8.5-1.8.9-3.1.9-2.4 0-4.4-1.6-5.1-3.8H.9v2.3A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.9 10.7a5.4 5.4 0 0 1 0-3.4V5H.9a9 9 0 0 0 0 8z"/><path fill="#EA4335" d="M9 3.6c1.3 0 2.5.5 3.5 1.4l2.6-2.6A9 9 0 0 0 .9 5l3 2.3C4.6 5.2 6.6 3.6 9 3.6z"/></svg>`;
 
 function telaGoogle() {
@@ -371,9 +372,9 @@ function telaAbastecer() {
     ${form.bomba == null ? '<div class="medidor"><span>Encerrante anterior</span><span class="v">escolha a bomba</span></div>'
       : `<div class="medidor"><span>Encerrante anterior (bomba ${form.bomba})</span><span class="v">${nf(ea)}</span>
       <span>Saída pelo encerrante</span><span class="v grande">${enc > ea ? nf(enc - ea) + ' L' : '–'}</span></div>`}
-    <ul class="checks">${c.regras.map(r => `<li class="${r.e === true ? 'ok' : r.e === false ? 'falha' : ''}">${esc(r.t)}${r.bomba
+    <ul class="checks">${c.regras.map(r => `<li class="${r.e === true ? 'ok' : r.e === false ? 'falha' : ''}"><span>${esc(r.t)}${r.bomba
       ? ` <button class="link" type="button" data-bomba="${r.bomba}">Usar a bomba ${r.bomba}</button>` : ''}${r.corrigir
-      ? ' <button class="link" type="button" data-acao="corrigir-veiculo">Corrigir tanque ou KM do caminhão</button>' : ''}</li>`).join('')}</ul>
+      ? ' <button class="link" type="button" data-acao="corrigir-veiculo">Corrigir tanque ou KM do caminhão</button>' : ''}</span></li>`).join('')}</ul>
     ${falha ? `<div class="field"><label class="lbl" for="f-obs">O que aconteceu? (vai para o supervisor)</label>
       <textarea id="f-obs" rows="2" maxlength="500">${esc(form.obs)}</textarea></div>` : ''}
     <div class="field desconto"><span class="lbl">O diesel foi descontado do motorista?</span>
@@ -383,11 +384,9 @@ function telaAbastecer() {
       </div>
       ${semDesconto ? `<label class="lbl" for="f-just">Por que não foi descontado? (o supervisor precisa autorizar)</label>
         <textarea id="f-just" rows="2" maxlength="500">${esc(form.justificativa)}</textarea>` : ''}</div>
-    ${form.fotos.length ? '' : '<p class="hint">Tire a foto do comprovante do abastecimento junto com o visor da bomba, com os números legíveis.</p>'}
-    ${blocoFotos(form.fotos, 'abastecimento', 1, 1)}
-    ${c.bloqueios.length ? `<p class="hint">${c.bloqueios.map(esc).join(' ')}</p>` : ''}
+    ${blocoFotos(form.fotos, 'abastecimento', 1, 1, 'Foto do comprovante com o visor da bomba')}
     ${botaoEnviar('enviar', semDesconto || fora ? 'Pedir autorização ao supervisor' : falha ? 'Enviar para o supervisor' : 'Enviar abastecimento', pode,
-      semDesconto || fora || falha ? 'warn' : '')}`;
+      '', c.bloqueios.length ? `Falta: ${c.bloqueios[0].replace(/\.$/, '')}${c.bloqueios.length > 1 ? ` (e mais ${c.bloqueios.length - 1})` : ''}` : '')}`;
 }
 
 function telaNovoVeiculo() {
@@ -563,8 +562,7 @@ function telaFechar() {
 }
 
 function telaAjuda() {
-  return `<div class="field"><span class="lbl">Tema da tela</span>${htmlTema()}</div>
-    ${htmlAbasGuia(guia, ['frentista', 'glossario'])}${htmlGuia(guia, estado.turno)}
+  return `${htmlAbasGuia(guia, ['frentista', 'glossario'])}${htmlGuia(guia, estado.turno)}
     <p class="hint">Conta do celular: ${esc(conta)}</p>`;
 }
 
@@ -608,15 +606,17 @@ function render(manterFoco) {
   const foco = manterFoco && document.activeElement?.id;
   const pos = foco && document.activeElement.selectionStart;
   const logado = conta && estado && !semAcesso && login;
-  const abas = $('abas'), abasEscondidas = !logado || !!tela || boasVindas;
-  if (abas.hidden && !abasEscondidas) { abas.classList.remove('sobe'); void abas.offsetWidth; abas.classList.add('sobe'); }
-  abas.hidden = abasEscondidas;
+  const semMenu = !logado || !!tela || boasVindas;
+  $('menu').hidden = semMenu;
+  if (semMenu) fecharMenu();
   $('sair').hidden = !logado || boasVindas;
+  $('titulo-tela').textContent = logado && !boasVindas ? (tela ? TITULO_SUBTELA[tela] : TITULO_ABA[aba]) : 'Abastecimento';
   $('subtitulo').textContent = logado ? login.nome : conta && estado && !semAcesso ? 'Celular do posto' : '';
+  if (logado) desenharGaveta();
   let html, chave;
   if (!conta) { html = telaGoogle(); chave = 'google'; }
   else if (semAcesso) { html = telaSemAcesso(); chave = 'semacesso'; }
-  else if (!estado) { html = semRede ? telaSemRede() : '<p class="hint">Carregando…</p>'; chave = semRede ? 'semrede' : 'carregando'; }
+  else if (!estado) { html = semRede ? telaSemRede() : ''; chave = semRede ? 'semrede' : 'carregando'; }
   else if (!login) { html = telaLoginFrentista(); chave = escolhido ? 'pin' : 'nomes'; }
   else if (boasVindas) { html = telaBoasVindas(); chave = 'ola'; }
   else if (tela === 'veiculo') { html = telaNovoVeiculo(); chave = 'sub:veiculo'; }
@@ -625,7 +625,8 @@ function render(manterFoco) {
   else { html = { abastecer: telaAbastecer, turno: telaTurno, chegada: telaChegada, aferir: telaAfericao, fechar: telaFechar, ajuda: telaAjuda }[aba](); chave = `aba:${aba}`; }
   conteudo.innerHTML = html;
   animarTroca(chave);
-  document.querySelectorAll('#abas button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === aba)));
+  document.querySelectorAll('#abas [data-aba]').forEach(b => b.toggleAttribute('aria-current', b.dataset.aba === aba && !tela));
+  if (chave !== 'carregando') tirarAbertura();
   if (foco) { const el = $(foco); if (el) { el.focus(); try { if (pos != null) el.setSelectionRange(pos, pos); } catch { /* campo sem seleção */ } } }
   desenharAtualizacao();
 }
@@ -727,13 +728,15 @@ conteudo.addEventListener('click', async e => {
 });
 
 $('abas').addEventListener('click', async e => {
-  const b = e.target.closest('button'); if (!b) return;
+  const b = e.target.closest('[data-aba]'); if (!b) return;
+  fecharMenu();
   aba = b.dataset.aba; aviso = null; render(); conteudo.scrollTop = 0;
   try { await atualizarEstado(); } catch (err) { tratarErro(err); }
   render();
 });
 
 $('sair').addEventListener('click', async () => {
+  fecharMenu();
   try { if (login) await rpc('sair_frentista', { p_sessao: login.sessao }); } catch { /* sai mesmo sem rede */ }
   login = null; gravar('frentistaLogin', null); escolhido = null; pin = ''; aviso = null; tela = null;
   clearTimeout(timerBoasVindas); boasVindas = false; confirmaLimpar = false; editPreco = null; sugestaoPreco = null;
@@ -878,6 +881,66 @@ async function salvarMotorista() {
   await atualizarEstado();
   form.motorista = form.motoristaTxt = r.nome; tela = null;
   aviso = { tipo: 'ok', texto: `Motorista ${r.nome} cadastrado.` };
+}
+
+// ---------- Menu lateral (igual ao do painel) ----------
+const TITULO_ABA = { abastecer: 'Abastecer', turno: 'Turno de hoje', chegada: 'Chegada de diesel', aferir: 'Aferição', fechar: 'Fechar turno', ajuda: 'Guia de uso' };
+const TITULO_SUBTELA = { veiculo: 'Cadastrar veículo', motorista: 'Cadastrar motorista', corrigir: 'Corrigir caminhão' };
+const gaveta = $('gaveta'), veu = $('veu');
+const menuAberto = () => !gaveta.hidden;
+function abrirMenu() {
+  if (!$('menu').hidden && !menuAberto()) {
+    gaveta.hidden = veu.hidden = false; void gaveta.offsetWidth;
+    gaveta.classList.add('aberta'); veu.classList.add('aberto'); $('menu').setAttribute('aria-expanded', 'true');
+  }
+}
+function fecharMenu() {
+  if (!menuAberto()) return;
+  gaveta.classList.remove('aberta'); veu.classList.remove('aberto'); $('menu').setAttribute('aria-expanded', 'false');
+  setTimeout(() => { if (!gaveta.classList.contains('aberta')) gaveta.hidden = veu.hidden = true; }, 220);
+}
+// Quem está logado e os números ao lado dos itens (abastecimentos de hoje, aferição vencida)
+function desenharGaveta() {
+  $('gaveta-quem').innerHTML = `${avatar(login.nome)}<span><b>${esc(login.nome)}</b><small>Frentista${estado?.turno ? ` · turno até ${esc(estado.turno.fechamento)}` : ''}</small></span>`;
+  const qtd = (k, txt, aviso) => { const el = gaveta.querySelector(`[data-qtd="${k}"]`); if (el) { el.textContent = txt || ''; el.classList.toggle('aviso', !!aviso); } };
+  qtd('turno', estado?.hoje?.length || '');
+  qtd('aferir', (estado?.bombas || []).some(b => b.afericao_vencida) ? 'vencida' : '', true);
+}
+$('menu').addEventListener('click', () => (menuAberto() ? fecharMenu() : abrirMenu()));
+veu.addEventListener('click', fecharMenu);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharMenu(); });
+// Arrastar da borda esquerda abre; arrastar a gaveta para a esquerda fecha
+let toqueX = null, toqueY = null;
+document.addEventListener('touchstart', e => { const t = e.touches[0]; toqueX = t.clientX; toqueY = t.clientY; }, { passive: true });
+document.addEventListener('touchend', e => {
+  if (toqueX == null) return;
+  const t = e.changedTouches[0], dx = t.clientX - toqueX, dy = Math.abs(t.clientY - toqueY);
+  if (!menuAberto() && toqueX < 24 && dx > 60 && dy < 50) abrirMenu();
+  else if (menuAberto() && dx < -60 && dy < 50) fecharMenu();
+  toqueX = null;
+}, { passive: true });
+// Botão voltar do Android: fecha o menu, volta da subtela ou para Abastecer; em Abastecer, deixa o app em segundo plano
+if (nativo) {
+  App.addListener('backButton', () => {
+    if (menuAberto()) return fecharMenu();
+    if (confirmaLimpar) { confirmaLimpar = false; return render(); }
+    if (tela) { tela = null; aviso = null; return render(); }
+    if (login && !boasVindas && aba !== 'abastecer') { aba = 'abastecer'; aviso = null; return render(); }
+    if (!login && escolhido) { escolhido = null; pin = ''; aviso = null; return render(); }
+    App.minimizeApp();
+  });
+}
+
+// ---------- Abertura ----------
+// A tela com o logo aparece junto com o app (está no HTML) e sai quando a primeira tela fica pronta.
+// Fica pelo menos 0,6 s, para não piscar; com a internet lenta, avisa que está conectando.
+const inicio = Date.now();
+const msgLenta = setTimeout(() => { const m = $('abertura-msg'); if (m) m.textContent = 'Conectando…'; }, 3000);
+function tirarAbertura() {
+  const a = $('abertura');
+  if (!a || a.classList.contains('sai')) return;
+  clearTimeout(msgLenta);
+  setTimeout(() => { a.classList.add('sai'); setTimeout(() => a.remove(), 320); }, Math.max(0, 600 - (Date.now() - inicio)));
 }
 
 // ---------- Início ----------

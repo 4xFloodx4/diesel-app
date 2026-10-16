@@ -15,7 +15,7 @@ const CAMPOS = {
   tentativa: 'Tentativa', no_dia: 'Erros no dia', caminho: 'Arquivo', enviada_em: 'Enviada em', enviada_por: 'Enviada por',
 };
 const IGNORAR = new Set(['atualizado_em', 'criado_em', 'id', 'alterado_em']);
-const PAPEL = { posto: 'Celular do posto', supervisor: 'Supervisor', administrador: 'Administrador' };
+const PAPEL = { posto: 'Celular do posto', supervisor: 'Supervisor', administrador: 'Administrador', desenvolvedor: 'Desenvolvedor' };
 const NOME_TIPO = { lancamento: 'Lançamento', decisao: 'Decisão', cadastro: 'Cadastro', acesso: 'Acesso', lote: 'KMM', entrada: 'Entrada no app', outro: 'Outro' };
 
 export function valorSimples(v) {
@@ -168,7 +168,7 @@ export function htmlAuditoria(eventos, ctx, filtro = 'todos', busca = '') {
   }
   return grupos.map(g => `<div class="aud-dia">${esc(g.dia)}</div><ul class="aud-lista">${g.itens.map(({ e, x }) => `<li class="aud">
     <span class="h">${horaLocal(e.quando)}</span>
-    <span class="av ${e.papel === 'administrador' ? 'admin' : ''}" aria-hidden="true">${esc(iniciais(x.quem))}</span>
+    <span class="av ${['administrador', 'desenvolvedor'].includes(e.papel) ? 'admin' : ''}" aria-hidden="true">${esc(iniciais(x.quem))}</span>
     <div><div class="frase"><span class="tag">${NOME_TIPO[x.tipo]}</span><b>${esc(x.quem)}</b> ${x.frase}</div>
       <div class="quem"><span class="h-curta">${horaLocal(e.quando)} · </span>${esc(x.papel)}</div>
       ${x.motivo ? `<div class="motivo">Motivo: ${esc(x.motivo)}</div>` : ''}
