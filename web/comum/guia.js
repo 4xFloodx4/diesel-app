@@ -31,7 +31,8 @@ export const GUIA = {
       <div class="atencao"><b>Depois do fechamento do turno</b>, não dá para lançar mais nada com a data daquele dia.</div>`],
     ['caminhao', 'Placa ou motorista que não está na lista', 'Cadastro pelo app', `<ol><li>Se a busca não achar, toque em <b>+ Cadastrar</b>: o cadastro já vem com o que você digitou.</li>
       <li>Veículo: digite a placa, o tamanho do tanque e o KM, e <b>tire uma foto do caminhão mostrando a placa</b>.</li>
-      <li>Motorista: nome completo e CPF (o KMM exige o CPF).</li></ol><div class="dica">Ao enviar o abastecimento, o motorista fica ligado àquela placa e aparece da próxima vez.
+      <li>Motorista: nome completo e CPF (o KMM exige o CPF).</li>
+      <li><b>Tanque ou KM do caminhão errado?</b> Depois de escolher a placa, toque em <b>Corrigir tanque ou KM deste caminhão</b>. Vale na hora e fica registrado com seu nome.</li></ol><div class="dica">Ao enviar o abastecimento, o motorista fica ligado àquela placa e aparece da próxima vez.
       Depois de cadastrado, só o supervisor pode alterar. Errou algo? Avise.</div>`],
     ['regua', 'Chegada de diesel e fechamento do turno', 'Régua, nota fiscal e fotos', `<ol><li><b>Chegada:</b> meça a régua antes da descarga, descarregue e meça de novo. Lance a NF, os litros e as duas medidas, e tire foto da nota.</li>
       <li><b>Fechamento (até as {FECHAMENTO}):</b> meça cada tanque com a régua, digite as medidas, tire foto da régua e toque em <b>Fechar turno</b>.</li></ol>

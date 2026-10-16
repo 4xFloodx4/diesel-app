@@ -105,6 +105,13 @@ export function descrever(e, ctx = {}) {
     case 'frentista.pin_definido':
       tipo = 'cadastro'; frase = `definiu um <b>PIN novo</b> para <b>${esc((ctx.frentistas || {})[e.entidade_id] || `frentista ${e.entidade_id}`)}</b>.`; break;
     case 'foto.excluida': tipo = 'cadastro'; frase = `excluiu uma foto (${esc(e.entidade)} ${id}).`; break;
+    case 'veiculo.corrigido': {
+      tipo = 'cadastro';
+      const partes = [d.capacidade && `tanque de <b>${esc(valorSimples(d.capacidade[0]))}</b> para <b>${esc(valorSimples(d.capacidade[1]))} L</b>`,
+        d.km && `KM de <b>${esc(valorSimples(d.km[0]))}</b> para <b>${esc(valorSimples(d.km[1]))}</b>`].filter(Boolean);
+      frase = `corrigiu o caminhão ${placa(e.entidade_id)}${partes.length ? `: ${partes.join(', ')}` : ''}.`;
+      break;
+    }
     case 'veiculo.foto_anexada': tipo = 'cadastro'; frase = `anexou uma foto ao veículo ${placa(e.entidade_id)}.`; break;
     default:
       if (grupo === 'cadastro') {

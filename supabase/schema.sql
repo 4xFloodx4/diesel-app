@@ -158,6 +158,9 @@ alter table veiculos add column if not exists criado_por text;
 alter table veiculos add column if not exists criado_em timestamptz default now();
 -- Placa importada da planilha (só placa + motorista) entra sem capacidade: o frentista informa no primeiro abastecimento
 alter table veiculos alter column capacidade_l drop not null;
+-- KM corrigido (pelo frentista no app ou no painel): vira o novo ponto de partida. A conferência de KM ignora os
+-- abastecimentos anteriores a este momento (ex.: painel do caminhão trocado, ou um KM digitado errado antes).
+alter table veiculos add column if not exists km_desde timestamp;
 
 create table if not exists motoristas (
   id     bigint generated always as identity primary key,
@@ -201,7 +204,11 @@ create table if not exists bombas (
 create or replace function normalizar_cadastro() returns trigger
 language plpgsql as $$
 begin
-  if tg_table_name in ('veiculos', 'veiculo_motoristas') then new.placa := normaliza_placa(new.placa);
+  if tg_table_name in ('veiculos', 'veiculo_motoristas') then
+    new.placa := normaliza_placa(new.placa);
+    if tg_table_name = 'veiculos' and tg_op = 'UPDATE' then   -- if separado: veiculo_motoristas não tem km_inicial
+      if new.km_inicial is distinct from old.km_inicial then new.km_desde := agora_local(); end if;   -- KM mudou: conta daqui para frente
+    end if;
   elsif tg_table_name = 'motoristas' then
     new.nome := normaliza_nome(new.nome);
     new.cpf := regexp_replace(new.cpf, '\D', '', 'g');
@@ -547,18 +554,18 @@ begin
   elsif coalesce(length(v_mot.cpf), 0) <> 11 then p := p || format('Motorista ''%s'' sem CPF válido no cadastro (o KMM exige CPF).', v_mot.nome);
   end if;
 
-  -- KM crescente e salto razoável (só contam abastecimentos aceitos, anteriores a este)
+  -- KM crescente e salto razoável (só contam abastecimentos aceitos, anteriores a este e depois da última correção de KM).
+  -- Maior que o último lançado; igual ao KM do cadastro vale (o frentista corrige e lança com o mesmo KM do painel).
   if v_veic.placa is not null then
     select max(km) into v_km_ant from abastecimentos
      where placa = v_placa and data_hora < p_data_hora and id is distinct from p_excluir
-       and status in ('Pronto', 'Em lote', 'Lançado');
-    v_km_ant := greatest(v_km_ant, v_veic.km_inicial);
-    if v_km_ant is not null then
-      if p_km <= v_km_ant then
-        p := p || format('KM %s não é maior que o último KM da placa (%s).', fmt(p_km), fmt(v_km_ant));
-      elsif p_km - v_km_ant > 3000 then
-        p := p || format('Salto de KM suspeito: %s km desde o último abastecimento.', fmt(p_km - v_km_ant));
-      end if;
+       and status in ('Pronto', 'Em lote', 'Lançado') and (v_veic.km_desde is null or data_hora >= v_veic.km_desde);
+    if v_km_ant is not null and p_km <= v_km_ant then
+      p := p || format('KM %s não é maior que o último KM da placa (%s).', fmt(p_km), fmt(v_km_ant));
+    elsif v_veic.km_inicial is not null and p_km < v_veic.km_inicial then
+      p := p || format('KM %s é menor que o KM do cadastro da placa (%s).', fmt(p_km), fmt(v_veic.km_inicial));
+    elsif p_km - greatest(v_km_ant, v_veic.km_inicial) > 3000 then
+      p := p || format('Salto de KM suspeito: %s km desde o último abastecimento.', fmt(p_km - greatest(v_km_ant, v_veic.km_inicial)));
     end if;
     if v_veic.capacidade_l is null then
       p := p || format('Placa %s sem o tamanho do tanque no cadastro.', v_placa);
@@ -663,7 +670,12 @@ begin
       from frentistas f where f.ativo), '[]'),
     'veiculos', coalesce((select jsonb_agg(jsonb_build_object(
         'placa', v.placa, 'capacidade_l', v.capacidade_l,
-        'km_anterior', greatest(v.km_inicial, (select max(km) from abastecimentos a where a.placa = v.placa and a.status in ('Pronto', 'Em lote', 'Lançado'))),
+        -- km_ultimo: maior KM lançado desde a última correção; km_cadastro: o KM do cadastro (o app confere igual ao banco)
+        'km_ultimo', (select max(km) from abastecimentos a where a.placa = v.placa and a.status in ('Pronto', 'Em lote', 'Lançado')
+                         and (v.km_desde is null or a.data_hora >= v.km_desde)),
+        'km_cadastro', v.km_inicial,
+        'km_anterior', greatest(v.km_inicial, (select max(km) from abastecimentos a where a.placa = v.placa and a.status in ('Pronto', 'Em lote', 'Lançado')
+                         and (v.km_desde is null or a.data_hora >= v.km_desde))),
         'motorista_sugerido', (select a.motorista from abastecimentos a where a.placa = v.placa order by a.id desc limit 1),
         -- motoristas vinculados à placa (ativos), para o app mostrar ao escolher a placa
         'motoristas', coalesce((select jsonb_agg(m.nome order by m.nome) from veiculo_motoristas vm
@@ -929,6 +941,30 @@ begin
   insert into veiculos (placa, capacidade_l, km_inicial, ativo, criado_por) values (v_placa, p_capacidade, p_km, true, 'Frentista: ' || v_nome);
   perform registrar_fotos('veiculo', v_placa, array[p_foto], v_frent);
   return jsonb_build_object('placa', v_placa);
+end $$;
+
+-- O frentista corrige o tamanho do tanque ou o KM atual de um caminhão já cadastrado. Muda na hora e fica no histórico
+-- com o nome dele. KM corrigido vira o novo ponto de partida da conferência (ver km_desde).
+create or replace function corrigir_veiculo_app(p_sessao text, p_placa text, p_capacidade numeric, p_km integer) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_frent bigint; v_antes veiculos; v_depois veiculos;
+begin
+  perform exigir(array['posto', 'supervisor']);
+  v_frent := frentista_da_sessao(p_sessao);
+  select * into v_antes from veiculos where placa = normaliza_placa(p_placa) and ativo for update;
+  if v_antes.placa is null then raise exception 'Placa não cadastrada.' using errcode = 'P0002'; end if;
+  if p_capacidade is null and p_km is null then raise exception 'Informe o tanque ou o KM.' using errcode = '22023'; end if;
+  if p_capacidade is not null and (p_capacidade <= 0 or p_capacidade >= 5000) then
+    raise exception 'Tamanho do tanque inválido.' using errcode = '22023';
+  end if;
+  if p_km is not null and (p_km <= 0 or p_km >= 10000000) then raise exception 'KM inválido.' using errcode = '22023'; end if;
+  update veiculos set capacidade_l = coalesce(p_capacidade, capacidade_l), km_inicial = coalesce(p_km, km_inicial)
+   where placa = v_antes.placa returning * into v_depois;
+  perform auditar('veiculo.corrigido', 'veiculos', v_antes.placa, jsonb_build_object(
+    'frentista', (select nome from frentistas where id = v_frent),
+    'capacidade', case when v_depois.capacidade_l is distinct from v_antes.capacidade_l then jsonb_build_array(v_antes.capacidade_l, v_depois.capacidade_l) end,
+    'km', case when v_depois.km_inicial is distinct from v_antes.km_inicial then jsonb_build_array(v_antes.km_inicial, v_depois.km_inicial) end));
+  return jsonb_build_object('placa', v_depois.placa, 'capacidade_l', v_depois.capacidade_l, 'km_inicial', v_depois.km_inicial);
 end $$;
 
 create or replace function cadastrar_motorista_app(p_sessao text, p_nome text, p_cpf text) returns jsonb
@@ -1249,6 +1285,7 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frent
   registrar_abastecimento(text, jsonb), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[]),
   registrar_afericao(text, jsonb, text[]),
   cadastrar_veiculo_app(text, text, numeric, integer, text), cadastrar_motorista_app(text, text, text),
+  corrigir_veiculo_app(text, text, numeric, integer),
   definir_pin(bigint, text), decidir_autorizacao(bigint, boolean, text), importar_vinculos(jsonb),
   decidir_abastecimento(bigint, text, text, jsonb), marcar_erro_kmm(bigint, text),
   gerar_lote(), linhas_lote(bigint), fechar_lote(bigint, text), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)

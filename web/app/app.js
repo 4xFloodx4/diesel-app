@@ -26,7 +26,7 @@ let tela = null;                         // subtela: 'veiculo' | 'motorista' | n
 let aviso = null, enviando = false, semAcesso = false, semRede = false;
 let form = null, chegada = null, medidos = {}, fotosChegada = [], fotosFechamento = [];
 let afericao = { bomba: null, visor: '' }, fotosAfericao = [];
-let novoVeiculo = null, novoMotorista = null;
+let novoVeiculo = null, novoMotorista = null, correcao = null;   // correcao: {placa, capacidade, km} do caminhão já cadastrado
 let escolhido = null, pin = '';          // tela de login do frentista
 let guia = 'frentista';
 
@@ -126,13 +126,16 @@ function conferir(f) {
   if (precisaCpf(f) && !cpfValido(f.cpf)) bloqueios.push('Informe o CPF do motorista.');
   const cap = v?.capacidade_l ?? (parseNum(f.capacidade) > 0 ? parseNum(f.capacidade) : null);
   const regras = [];
+  // Igual ao banco: maior que o último lançado (desde a última correção de KM); igual ao KM do cadastro vale
   const ka = v?.km_anterior == null ? null : Number(v.km_anterior);
+  const kUlt = v?.km_ultimo == null ? null : Number(v.km_ultimo), kCad = v?.km_cadastro == null ? null : Number(v.km_cadastro);
   if (!v || !(km > 0)) regras.push({ e: null, t: 'KM maior que o último da placa.' });
-  else if (ka != null && km <= ka) regras.push({ e: false, t: `KM ${nf(km, 0)} é menor ou igual ao último desta placa (${nf(ka, 0)}).` });
-  else if (ka != null && km - ka > LIM.kmSalto) regras.push({ e: false, t: `Rodou ${nf(km - ka, 0)} km desde o último abastecimento. Confira o painel.` });
+  else if (kUlt != null && km <= kUlt) regras.push({ e: false, t: `KM ${nf(km, 0)} é menor ou igual ao último desta placa (${nf(kUlt, 0)}).`, corrigir: true });
+  else if (kCad != null && km < kCad) regras.push({ e: false, t: `KM ${nf(km, 0)} é menor que o KM do cadastro desta placa (${nf(kCad, 0)}).`, corrigir: true });
+  else if (ka != null && km - ka > LIM.kmSalto) regras.push({ e: false, t: `Rodou ${nf(km - ka, 0)} km desde o último abastecimento. Confira o painel.`, corrigir: true });
   else regras.push({ e: true, t: ka == null ? 'Primeiro abastecimento registrado desta placa.' : `KM coerente: +${nf(km - ka, 0)} km.` });
   if (!v || !(lt > 0) || cap == null) regras.push({ e: null, t: 'Litros dentro da capacidade do tanque.' });
-  else if (lt > cap * LIM.tolCap) regras.push({ e: false, t: `${nf(lt)} L passa da capacidade do tanque deste veículo (${nf(cap, 0)} L).` });
+  else if (lt > cap * LIM.tolCap) regras.push({ e: false, t: `${nf(lt)} L passa da capacidade do tanque deste veículo (${nf(cap, 0)} L).`, corrigir: true });
   else regras.push({ e: true, t: `Cabe no tanque do veículo (${nf(cap, 0)} L).` });
   const ea = encAnterior(f.bomba);
   const bate = anterior => Math.abs(enc - anterior - lt) <= LIM.tolEnc;
@@ -229,6 +232,7 @@ function campoPlaca(v) {
   return `<div class="field"><label class="lbl" for="f-placa">Placa</label>
     <input id="f-placa" class="busca" maxlength="8" autocapitalize="characters" ${SEM_TECLADO_ESPERTO} placeholder="Digite o começo da placa" value="${esc(form.placaTxt)}">
     ${form.placa ? `<span class="escolhido">✓ ${esc(form.placa)}${v.capacidade_l == null ? '' : ` · tanque de ${nf(v.capacidade_l, 0)} L`}</span>` : ''}
+    ${form.placa && !precisaCapacidade(form) ? '<button class="link esq" type="button" data-acao="corrigir-veiculo">Corrigir tanque ou KM deste caminhão</button>' : ''}
     ${precisaCapacidade(form) ? `<div class="primeira-vez"><label class="lbl" for="f-cap">Primeiro abastecimento desta placa: tamanho do tanque do veículo (L)</label>
       <input id="f-cap" class="num" inputmode="decimal" value="${esc(form.capacidade)}"></div>` : ''}
     ${lista.length ? `<div class="sugestoes">${lista.map(x => `<button type="button" data-sug-placa="${esc(x.placa)}"><b>${esc(x.placa)}</b>
@@ -291,7 +295,8 @@ function telaAbastecer() {
       : `<div class="medidor"><span>Encerrante anterior (bomba ${form.bomba})</span><span class="v">${nf(ea)}</span>
       <span>Saída pelo encerrante</span><span class="v grande">${enc > ea ? nf(enc - ea) + ' L' : '–'}</span></div>`}
     <ul class="checks">${c.regras.map(r => `<li class="${r.e === true ? 'ok' : r.e === false ? 'falha' : ''}">${esc(r.t)}${r.bomba
-      ? ` <button class="link" type="button" data-bomba="${r.bomba}">Usar a bomba ${r.bomba}</button>` : ''}</li>`).join('')}</ul>
+      ? ` <button class="link" type="button" data-bomba="${r.bomba}">Usar a bomba ${r.bomba}</button>` : ''}${r.corrigir
+      ? ' <button class="link" type="button" data-acao="corrigir-veiculo">Corrigir tanque ou KM do caminhão</button>' : ''}</li>`).join('')}</ul>
     ${falha ? `<div class="field"><label class="lbl" for="f-obs">O que aconteceu? (vai para o supervisor)</label>
       <textarea id="f-obs" rows="2" maxlength="500">${esc(form.obs)}</textarea></div>` : ''}
     <div class="field desconto"><span class="lbl">O diesel foi descontado do motorista?</span>
@@ -320,6 +325,26 @@ function telaNovoVeiculo() {
     ${f.fotos.length ? '' : '<p class="hint">Tire uma foto do caminhão mostrando a placa.</p>'}
     ${blocoFotos(f.fotos, 'veiculo', 1, 1)}
     ${botaoEnviar('salvar-veiculo', 'Cadastrar veículo', pode)}
+    <button class="btn ghost" type="button" data-acao="voltar">Voltar</button>`;
+}
+
+function telaCorrigirVeiculo() {
+  const f = correcao, v = estado.veiculos.find(x => x.placa === f.placa);
+  const cap = parseNum(f.capacidade), km = parseNum(f.km);
+  const capMudou = cap > 0 && cap < 5000 && cap !== Number(v?.capacidade_l), kmOk = f.km.trim() !== '' && km > 0 && km < 1e7;
+  const capErrada = f.capacidade.trim() !== '' && !(cap > 0 && cap < 5000), kmErrado = f.km.trim() !== '' && !kmOk;
+  return `<h2>Corrigir o caminhão ${esc(f.placa)}</h2>
+    <p class="hint">Mude só o que está errado. A correção vale na hora e fica registrada com o seu nome.</p>
+    ${avisoHtml()}
+    <div class="field"><label class="lbl" for="cv-cap">Tamanho do tanque do caminhão (L)</label>
+      <input id="cv-cap" class="num" inputmode="decimal" value="${esc(f.capacidade)}">
+      ${capErrada ? '<span class="hint">Confira: deve ficar entre 1 e 4.999 L.</span>' : ''}</div>
+    <div class="field"><label class="lbl" for="cv-km">KM atual do painel do caminhão (deixe em branco se o KM está certo)</label>
+      <input id="cv-km" class="num" inputmode="numeric" value="${esc(f.km)}">
+      <span class="hint">Último KM conhecido: ${v?.km_anterior == null ? 'sem registro' : `${nf(v.km_anterior, 0)} km`}.
+        O KM informado aqui passa a ser o ponto de partida: os próximos abastecimentos são conferidos a partir dele.</span>
+      ${kmErrado ? '<span class="hint">KM inválido.</span>' : ''}</div>
+    ${botaoEnviar('salvar-correcao', 'Salvar correção', (capMudou || kmOk) && !capErrada && !kmErrado)}
     <button class="btn ghost" type="button" data-acao="voltar">Voltar</button>`;
 }
 
@@ -461,6 +486,7 @@ function render(manterFoco) {
   else if (!login) html = telaLoginFrentista();
   else if (tela === 'veiculo') html = telaNovoVeiculo();
   else if (tela === 'motorista') html = telaNovoMotorista();
+  else if (tela === 'corrigir') html = telaCorrigirVeiculo();
   else html = { abastecer: telaAbastecer, turno: telaTurno, chegada: telaChegada, aferir: telaAfericao, fechar: telaFechar, ajuda: telaAjuda }[aba]();
   conteudo.innerHTML = html;
   document.querySelectorAll('#abas button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === aba)));
@@ -493,6 +519,7 @@ conteudo.addEventListener('input', e => {
   } else if (mapaChegada[id]) chegada[mapaChegada[id]] = e.target.value;
   else if (mapaVeiculo[id]) novoVeiculo[mapaVeiculo[id]] = e.target.value;
   else if (mapaMotorista[id]) novoMotorista[mapaMotorista[id]] = e.target.value;
+  else if (id === 'cv-cap' || id === 'cv-km') correcao[id === 'cv-cap' ? 'capacidade' : 'km'] = e.target.value;
   else if (id === 'a-visor') afericao.visor = e.target.value;
   else if (e.target.dataset.tanque) medidos[e.target.dataset.tanque] = e.target.value;
   else return;
@@ -536,6 +563,12 @@ conteudo.addEventListener('click', async e => {
   if (acao === 'aferir') await executar(enviarAfericao);
   if (acao === 'salvar-veiculo') await executar(salvarVeiculo);
   if (acao === 'salvar-motorista') await executar(salvarMotorista);
+  if (acao === 'corrigir-veiculo' && form.placa) {
+    const v = estado.veiculos.find(x => x.placa === form.placa);
+    correcao = { placa: form.placa, capacidade: v?.capacidade_l == null ? '' : String(Number(v.capacidade_l)).replace('.', ','), km: '' };
+    tela = 'corrigir'; aviso = null; render();
+  }
+  if (acao === 'salvar-correcao') await executar(salvarCorrecao);
 });
 
 $('abas').addEventListener('click', async e => {
@@ -641,6 +674,16 @@ async function salvarVeiculo() {
   await atualizarEstado();
   escolherPlaca(r.placa); tela = null;
   aviso = { tipo: 'ok', texto: `Veículo ${r.placa} cadastrado.` };
+}
+
+async function salvarCorrecao() {
+  const f = correcao, v = estado.veiculos.find(x => x.placa === f.placa);
+  const cap = parseNum(f.capacidade), km = f.km.trim() ? Math.round(parseNum(f.km)) : null;
+  const r = await rpc('corrigir_veiculo_app', { p_sessao: login.sessao, p_placa: f.placa,
+    p_capacidade: cap > 0 && cap !== Number(v?.capacidade_l) ? cap : null, p_km: km });
+  await atualizarEstado();
+  tela = null; correcao = null;
+  aviso = { tipo: 'ok', texto: `Caminhão ${r.placa} corrigido: tanque de ${nf(r.capacidade_l, 0)} L${km != null ? `, KM ${nf(km, 0)}` : ''}. Ficou registrado com seu nome.` };
 }
 
 async function salvarMotorista() {
