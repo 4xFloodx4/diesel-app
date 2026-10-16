@@ -29,8 +29,8 @@ jobs:
         run: npm test
       - name: Projeto Android
         env:
-          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
           APP_ESQUEMA: ${{ vars.APP_ESQUEMA }}
           VERSAO_CODIGO: ${{ github.run_number }}
           VERSAO_NOME: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.{0}', github.run_number) }}

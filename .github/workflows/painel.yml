@@ -30,8 +30,8 @@ jobs:
       - name: Gerar site
         run: npm run build
         env:
-          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
           APP_ESQUEMA: ${{ vars.APP_ESQUEMA }}
       - uses: actions/upload-pages-artifact@v3
         with:
