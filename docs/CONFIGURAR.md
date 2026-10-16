@@ -91,11 +91,11 @@ Para atualizar o app depois, crie uma nova release com tag maior (`v1.0.1`, `v1.
 ## 7. Primeiro uso
 
 **No painel** (`https://SEU-USUARIO.github.io/diesel-app/painel/`), entre com a sua conta Google de supervisor:
+0. **Frentistas**: cadastre cada frentista com um **PIN de 4 números**. É com o nome e o PIN que ele entra no app.
 1. **Acessos**: libere o e-mail Google do celular do posto, como "Celular do posto".
 2. **Cadastros**:
    - tanques: capacidade e saldo medido no dia da implantação;
    - bombas: encerrante lido no dia da implantação;
-   - frentistas: os nomes que vão aparecer no celular;
    - veículos e motoristas: importe os CSV exportados do KMM (`placa;capacidade_tanque_l;ultimo_km` e `nome;cpf`).
 
 **No celular do posto:**
@@ -109,3 +109,13 @@ Para atualizar o app depois, crie uma nova release com tag maior (`v1.0.1`, `v1.
 - **Pausa por inatividade:** projeto gratuito sem nenhum uso por 7 dias é pausado. Com o posto lançando todo dia isso não acontece; se acontecer, é só clicar em **Restore** no painel do Supabase.
 - **Sem backup automático acessível:** no plano gratuito não há como restaurar uma cópia de dias anteriores. Faça uma **exportação para Excel** pelo painel toda semana (aba Abastecimentos → Exportar). Se o sistema virar essencial, o plano Pro (cerca de US$ 25/mês) tem backup diário.
 - **Espaço:** 500 MB, suficiente para muitos anos de abastecimentos.
+
+## Atualizar o app depois de instalado
+
+O app se atualiza sozinho. Cada mudança enviada ao GitHub publica um pacote novo das telas junto com o painel. Ao abrir, o app confere, baixa em segundo plano e, **na próxima abertura**, já está com a versão nova. Se a versão nova não conseguir abrir, ele volta sozinho para a anterior.
+
+Só é preciso instalar um APK novo quando mudar algo da "casca" do app: ícone, nome, permissões ou componentes do Android. Nesse caso, crie uma release nova (`v1.2.0`, …) e instale por cima.
+
+## Atualizar o banco
+
+Quando o `supabase/schema.sql` mudar, rode o arquivo inteiro de novo no SQL Editor. Ele só cria o que falta e atualiza as regras; nenhum dado é apagado.

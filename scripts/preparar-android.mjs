@@ -3,6 +3,7 @@
 //  * bloqueia backup do app (a sessão e os registros guardados não saem do celular por backup)
 //  * versão do app (VERSAO_CODIGO / VERSAO_NOME, preenchidas pelo GitHub Actions)
 //  * ícone
+//  * permissão de câmera
 import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +26,11 @@ const manifest = join(APP, 'src', 'main', 'AndroidManifest.xml');
 alterar(manifest, xml => {
   let x = xml.replace(/android:allowBackup="true"/, 'android:allowBackup="false"');
   if (!x.includes('android:allowBackup')) x = x.replace('<application', '<application android:allowBackup="false"');
+  // Câmera: fotos do caminhão, da NF e dos tanques
+  for (const perm of ['android.permission.CAMERA']) {
+    if (!x.includes(perm)) x = x.replace('<application', `<uses-permission android:name="${perm}" />
+    <application`);
+  }
   if (!x.includes(`android:scheme="${esquema}"`)) {
     const filtro = `
             <intent-filter android:autoVerify="false">
@@ -56,5 +62,5 @@ for (const arq of readdirSync(join(RAIZ, 'recursos', 'icone')).filter(a => a.sta
 }
 
 const m = readFileSync(manifest, 'utf8');
-if (!m.includes(`android:scheme="${esquema}"`) || !m.includes('android:allowBackup="false"')) throw new Error('Ajuste do manifest falhou.');
+if (!m.includes(`android:scheme="${esquema}"`) || !m.includes('android:allowBackup="false"') || !m.includes('android.permission.CAMERA')) throw new Error('Ajuste do manifest falhou.');
 console.log(`Android ajustado: retorno do login ${esquema}://login, backup bloqueado, versão ${nome} (${codigo}).`);

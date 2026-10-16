@@ -1,5 +1,6 @@
 {
   "_aviso": "Valores públicos por natureza: a chave anon só dá o que as regras RLS do banco permitem. NUNCA coloque aqui a chave service_role.",
+  "SITE_URL": "https://4xfloodx4.github.io/diesel-app/",
   "SUPABASE_URL": "https://myngumgxbrdbvwplcyep.supabase.co",
   "SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15bmd1bWd4YnJkYnZ3cGxjeWVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIxMTEwNDYsImV4cCI6MjEwNzY4NzA0Nn0.FLtO0QIrbOHlRtPDlBrRukpGGOhxonIANULYR5H0HIA"
 }

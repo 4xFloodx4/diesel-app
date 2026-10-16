@@ -16,7 +16,9 @@ export const supabase = createClient(URL_SUPABASE, CHAVE_ANON, {
 });
 
 export class ErroApi extends Error {
-  constructor(mensagem, semRede = false, semAcesso = false) { super(mensagem); this.semRede = semRede; this.semAcesso = semAcesso; }
+  constructor(mensagem, semRede = false, semAcesso = false, frentistaSaiu = false) {
+    super(mensagem); this.semRede = semRede; this.semAcesso = semAcesso; this.frentistaSaiu = frentistaSaiu;
+  }
 }
 
 function traduzir(error) {
@@ -24,8 +26,13 @@ function traduzir(error) {
   if (/Failed to fetch|NetworkError|Network request failed|Load failed|fetch failed/i.test(msg) || !navigator.onLine) {
     return new ErroApi('Sem conexão com a internet.', true);
   }
-  // Regras de proteção (ex.: administrador) usam o mesmo código 42501, mas a mensagem é para mostrar ao usuário
-  if (/Somente um administrador|único administrador/.test(msg)) return new ErroApi(msg);
+  if (/Login do frentista expirou/.test(msg)) return new ErroApi(msg, false, false, true);
+  // Regras de proteção usam o mesmo código 42501, mas a mensagem é para mostrar ao usuário
+  if (/dono do projeto|só gerencia contas de celular/.test(msg)) return new ErroApi(msg);
+  if (/violates foreign key constraint/.test(msg) && /frentistas/.test(msg)) {
+    return new ErroApi('Este frentista já tem lançamentos e não pode ser excluído. Desative em vez de excluir.');
+  }
+  if (/duplicate key value/.test(msg)) return new ErroApi('Já existe um cadastro com esse nome ou código.');
   if (error?.code === '42501' || /Acesso negado|permission denied/i.test(msg)) {
     return new ErroApi('Esta conta não tem acesso. Peça ao supervisor para liberar.', false, true);
   }

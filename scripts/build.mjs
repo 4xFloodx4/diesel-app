@@ -6,8 +6,11 @@
 //   SUPABASE_URL       ex.: https://abcdefgh.supabase.co
 //   SUPABASE_ANON_KEY  chave "anon public" do projeto (é pública por natureza; os dados são protegidos pelo RLS)
 //   APP_ESQUEMA        endereço de volta do login no app (padrão br.com.ritmolog.diesel)
+//   SITE_URL           endereço do GitHub Pages; o app procura atualizações em SITE_URL/atualizacao/versao.json
+//   VERSAO_WEB         versão das telas (no GitHub Actions: o commit); igual no APK e no pacote de atualização
 import { build } from 'esbuild';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,7 +25,10 @@ const cfg = {
   url: limpar(process.env.SUPABASE_URL || local.SUPABASE_URL).replace(/\/+$/, '').toLowerCase(),
   chave: limpar(process.env.SUPABASE_ANON_KEY || local.SUPABASE_ANON_KEY),
   esquema: limpar(process.env.APP_ESQUEMA || local.APP_ESQUEMA) || 'br.com.ritmolog.diesel',
+  site: limpar(process.env.SITE_URL || local.SITE_URL).replace(/\/*$/, '/'),
+  versao: limpar(process.env.VERSAO_WEB) || (() => { try { return execSync('git rev-parse --short=10 HEAD', { cwd: RAIZ }).toString().trim(); } catch { return 'dev'; } })(),
 };
+if (cfg.site === '/') cfg.site = '';
 const demo = process.argv.includes('--demo');
 if (demo) Object.assign(cfg, { url: 'https://demonstracao.supabase.co', chave: 'demonstracao' });
 const problemas = [];
@@ -42,12 +48,16 @@ if (problemas.length) {
   process.exit(1);
 }
 if (!/^[a-z][a-z0-9.]+$/.test(cfg.esquema)) { console.error('APP_ESQUEMA inválido.'); process.exit(1); }
+if (cfg.site && !/^https:\/\/[\w.-]+\/[\w./-]*$/.test(cfg.site)) { console.error('SITE_URL inválido.'); process.exit(1); }
+if (!/^[\w.-]{1,40}$/.test(cfg.versao)) { console.error('VERSAO_WEB inválida.'); process.exit(1); }
 
 // Política de conteúdo: só scripts e estilos do próprio app; rede só para o Supabase do projeto
+// (fotos: imagens com link temporário do Storage do Supabase; atualização: versao.json no próprio site)
 const host = new URL(cfg.url).host;
+const site = cfg.site ? new URL(cfg.site).origin : '';
 const CSP = [
-  "default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data: blob:", "font-src 'self'",
-  `connect-src 'self' https://${host} wss://${host}`, "object-src 'none'", "base-uri 'none'", "form-action 'none'",
+  "default-src 'self'", "script-src 'self'", "style-src 'self'", `img-src 'self' data: blob: https://${host}`, "font-src 'self'",
+  `connect-src 'self' https://${host} wss://${host} ${site}`.trim(), "object-src 'none'", "base-uri 'none'", "form-action 'none'",
 ].join('; ');
 
 async function gerar(destino, paginas) {
@@ -61,6 +71,8 @@ async function gerar(destino, paginas) {
       __SUPABASE_URL__: JSON.stringify(cfg.url),
       __SUPABASE_ANON_KEY__: JSON.stringify(cfg.chave),
       __APP_ESQUEMA__: JSON.stringify(cfg.esquema),
+      __VERSAO_WEB__: JSON.stringify(cfg.versao),
+      __URL_ATUALIZACAO__: JSON.stringify(cfg.site ? `${cfg.site}atualizacao/versao.json` : ''),
     },
     logLevel: 'warning',
   });
@@ -90,4 +102,4 @@ await gerar(join(RAIZ, 'dist-android'), [
   { js: 'app/app.js', css: 'app/app.css', html: 'app/index.html', saida: 'index.html', raiz: './' },
 ]);
 
-console.log(`Pronto: dist/ (site) e dist-android/ (APK). Supabase: ${host}${demo ? ' (demonstração)' : ''}`);
+console.log(`Pronto: dist/ (site) e dist-android/ (APK). Supabase: ${host}${demo ? ' (demonstração)' : ''}. Versão das telas: ${cfg.versao}`);

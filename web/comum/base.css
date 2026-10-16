@@ -62,3 +62,4 @@ input.num { font-family: var(--font-num); }
 .erro { color: var(--warn); font-weight: 500; }
 [hidden] { display: none !important; }
 @media (prefers-reduced-motion: no-preference) { .toast { animation: entra .2s ease-out; } @keyframes entra { from { opacity: .3; transform: translateY(-3px); } } }
+.pill.Aguardando-autorização { background: var(--accent-soft); color: var(--accent); }
