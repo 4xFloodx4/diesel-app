@@ -31,8 +31,39 @@ let escolhido = null, pin = '';          // tela de login do frentista
 let guia = 'frentista';
 
 // A bomba não vem marcada: o frentista escolhe a cada lançamento (só vem marcada se o posto tiver uma bomba só)
-const novoForm = () => ({ bomba: estado?.bombas?.length === 1 ? estado.bombas[0].numero : null, placa: '', motorista: '', hora: horaAgora(), km: '', litros: '', enc: '',
-  obs: '', desconto: null, justificativa: '', justHorario: '' });
+// placa/motorista: o que foi escolhido da lista; placaTxt/motoristaTxt: o que o frentista está digitando
+const novoForm = () => ({ bomba: estado?.bombas?.length === 1 ? estado.bombas[0].numero : null, placa: '', motorista: '', placaTxt: '', motoristaTxt: '',
+  hora: horaAgora(), km: '', litros: '', enc: '', obs: '', desconto: null, justificativa: '', justHorario: '' });
+
+// ---------- Busca de placa e motorista (o frentista digita o começo e toca na sugestão) ----------
+const MAX_SUGESTOES = 6;
+const soPlaca = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const semAcento = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+// "jo si" acha "JOÃO DA SILVA": cada pedaço digitado é o começo de alguma palavra do nome
+const bateNome = (nome, busca) => { const palavras = semAcento(nome).split(' '); return semAcento(busca).split(' ').every(p => palavras.some(w => w.startsWith(p))); };
+const vinculados = placa => estado.veiculos.find(v => v.placa === placa)?.motoristas || [];
+function sugestoesPlaca(txt) {
+  const q = soPlaca(txt);
+  if (!q) return [];
+  return estado.veiculos.filter(v => v.placa.includes(q))
+    .sort((a, b) => b.placa.startsWith(q) - a.placa.startsWith(q) || a.placa.localeCompare(b.placa)).slice(0, MAX_SUGESTOES);
+}
+function sugestoesMotorista(txt, placa) {
+  if (!semAcento(txt)) return [];
+  const vinc = vinculados(placa);
+  return estado.motoristas.filter(m => bateNome(m, txt)).sort((a, b) => vinc.includes(b) - vinc.includes(a) || a.localeCompare(b)).slice(0, MAX_SUGESTOES);
+}
+// Ao escolher a placa, puxa o motorista: o único vinculado, ou o último que usou a placa (se for vinculado)
+function escolherPlaca(placa) {
+  form.placa = placa;
+  if (!placa) return;
+  form.placaTxt = placa;
+  const vinc = vinculados(placa), ultimo = estado.veiculos.find(v => v.placa === placa)?.motorista_sugerido;
+  if (vinc.length && !vinc.includes(form.motorista)) {
+    form.motorista = vinc.length === 1 ? vinc[0] : vinc.includes(ultimo) ? ultimo : '';
+    form.motoristaTxt = form.motorista;
+  }
+}
 
 // Turno (horário definido pelo administrador). Aceita turno que vira a meia-noite.
 const minutos = hm => { const [h, m] = String(hm).split(':').map(Number); return h * 60 + m; };
@@ -67,8 +98,8 @@ function conferir(f) {
   const v = estado.veiculos.find(x => x.placa === f.placa);
   const bloqueios = [];
   if (f.bomba == null) bloqueios.push('Escolha a bomba.');
-  if (!f.placa) bloqueios.push('Escolha a placa.');
-  if (!f.motorista) bloqueios.push('Escolha o motorista.');
+  if (!f.placa) bloqueios.push('Escolha a placa na lista (ou cadastre).');
+  if (!f.motorista) bloqueios.push('Escolha o motorista na lista (ou cadastre).');
   if (!/^\d{2}:\d{2}$/.test(f.hora)) bloqueios.push('Informe a hora.');
   if (!(km > 0) || km >= 1e7) bloqueios.push('Informe o KM do painel.');
   if (!(lt > 0) || lt >= 5000) bloqueios.push('Informe os litros do visor.');
@@ -174,6 +205,33 @@ function telaLoginFrentista() {
     ${enviando ? '<p class="hint">Conferindo…</p>' : ''}</div>`;
 }
 
+const SEM_TECLADO_ESPERTO = 'autocomplete="off" autocorrect="off" spellcheck="false"';
+function campoPlaca(v) {
+  const txt = soPlaca(form.placaTxt), lista = form.placa ? [] : sugestoesPlaca(form.placaTxt);
+  return `<div class="field"><label class="lbl" for="f-placa">Placa</label>
+    <input id="f-placa" class="busca" maxlength="8" autocapitalize="characters" ${SEM_TECLADO_ESPERTO} placeholder="Digite o começo da placa" value="${esc(form.placaTxt)}">
+    ${form.placa ? `<span class="escolhido">✓ ${esc(form.placa)} · tanque de ${nf(v.capacidade_l, 0)} L</span>` : ''}
+    ${lista.length ? `<div class="sugestoes">${lista.map(x => `<button type="button" data-sug-placa="${esc(x.placa)}"><b>${esc(x.placa)}</b>
+      <small>${esc(vinculados(x.placa).slice(0, 2).join(', '))}${vinculados(x.placa).length > 2 ? '…' : ''}</small></button>`).join('')}</div>` : ''}
+    ${form.placa ? '' : txt && !lista.length
+      ? `<p class="hint">Nenhuma placa cadastrada com "${esc(txt)}".</p><button class="btn ghost small" type="button" data-acao="novo-veiculo">+ Cadastrar a placa ${esc(txt)}</button>`
+      : '<button class="link esq" type="button" data-acao="novo-veiculo">+ Placa não está na lista</button>'}</div>`;
+}
+function campoMotorista() {
+  const vinc = vinculados(form.placa), lista = form.motorista ? [] : sugestoesMotorista(form.motoristaTxt, form.placa);
+  const nome = form.motoristaTxt.trim();
+  return `<div class="field"><label class="lbl" for="f-motorista">Motorista</label>
+    ${vinc.length && !form.motorista ? `<span class="hint">Motoristas desta placa:</span><div class="vinculados">${vinc.map(m =>
+      `<button type="button" data-sug-motorista="${esc(m)}">${esc(m)}</button>`).join('')}</div>` : ''}
+    <input id="f-motorista" class="busca" maxlength="120" autocapitalize="characters" ${SEM_TECLADO_ESPERTO} placeholder="${vinc.length ? 'Ou digite o nome' : 'Digite o nome'}" value="${esc(form.motoristaTxt)}">
+    ${form.motorista ? `<span class="escolhido">✓ ${esc(form.motorista)}${form.placa && !vinc.includes(form.motorista) ? ' · fica vinculado a esta placa ao enviar' : ''}</span>` : ''}
+    ${lista.length ? `<div class="sugestoes">${lista.map(m => `<button type="button" data-sug-motorista="${esc(m)}"><b>${esc(m)}</b>
+      ${vinc.includes(m) ? '<small>desta placa</small>' : ''}</button>`).join('')}</div>` : ''}
+    ${form.motorista ? '' : nome && !lista.length
+      ? `<p class="hint">Nenhum motorista cadastrado com "${esc(nome)}".</p><button class="btn ghost small" type="button" data-acao="novo-motorista">+ Cadastrar o motorista</button>`
+      : '<button class="link esq" type="button" data-acao="novo-motorista">+ Motorista não está na lista</button>'}</div>`;
+}
+
 function telaAbastecer() {
   if (estado.fechado_hoje) return avisoHtml() + diaFechado();
   if (!estado.bombas.length) return '<p class="hint">Nenhuma bomba cadastrada. Peça ao supervisor.</p>';
@@ -192,20 +250,16 @@ function telaAbastecer() {
       ${estado.bombas.map(b => `<button type="button" data-bomba="${b.numero}" aria-pressed="${b.numero === form.bomba}"><b>${b.numero}</b>
         <small>${variosTanques ? `${esc(b.tanque)} · ` : ''}enc. ${nf(b.encerrante_anterior)}</small></button>`).join('')}
     </div></div>
+    ${campoPlaca(v)}
+    ${campoMotorista()}
     <div class="row2">
-      <div class="field"><label class="lbl" for="f-placa">Placa</label>
-        <select id="f-placa"><option value="">Escolha…</option>${estado.veiculos.map(x => `<option ${x.placa === form.placa ? 'selected' : ''}>${esc(x.placa)}</option>`).join('')}</select>
-        <button class="link esq" type="button" data-acao="novo-veiculo">+ Placa não está na lista</button></div>
+      <div class="field"><label class="lbl" for="f-km">KM do painel</label><input id="f-km" class="num" inputmode="numeric" value="${esc(form.km)}">
+        ${v ? `<span class="hint">Último: ${v.km_anterior == null ? 'sem registro' : nf(v.km_anterior, 0) + ' km'}</span>` : ''}</div>
       <div class="field"><label class="lbl" for="f-hora">Hora</label><input id="f-hora" type="time" value="${esc(form.hora)}"></div>
     </div>
     ${fora ? `<div class="field fora"><span class="chip hora">Fora do horário do turno (${esc(estado.turno.abertura)}–${esc(estado.turno.fechamento)})</span>
       <label class="lbl" for="f-just-h">Por que foi abastecido fora do horário? (o supervisor precisa autorizar)</label>
       <textarea id="f-just-h" rows="2" maxlength="500">${esc(form.justHorario)}</textarea></div>` : ''}
-    <div class="field"><label class="lbl" for="f-motorista">Motorista</label>
-      <select id="f-motorista"><option value="">Escolha…</option>${estado.motoristas.map(m => `<option ${m === form.motorista ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>
-      <button class="link esq" type="button" data-acao="novo-motorista">+ Motorista não está na lista</button></div>
-    <div class="field"><label class="lbl" for="f-km">KM do painel</label><input id="f-km" class="num" inputmode="numeric" value="${esc(form.km)}">
-      ${v ? `<span class="hint">Último desta placa: ${v.km_anterior == null ? 'sem registro' : nf(v.km_anterior, 0) + ' km'}</span>` : ''}</div>
     <div class="row2">
       <div class="field"><label class="lbl" for="f-litros">Litros (visor)</label><input id="f-litros" class="num" inputmode="decimal" value="${esc(form.litros)}"></div>
       <div class="field"><label class="lbl" for="f-enc">Encerrante final</label><input id="f-enc" class="num" inputmode="decimal" value="${esc(form.enc)}"></div>
@@ -391,7 +445,7 @@ function render(manterFoco) {
 }
 
 // ---------- Eventos ----------
-const mapaForm = { 'f-placa': 'placa', 'f-motorista': 'motorista', 'f-hora': 'hora', 'f-km': 'km', 'f-litros': 'litros', 'f-enc': 'enc',
+const mapaForm = { 'f-hora': 'hora', 'f-km': 'km', 'f-litros': 'litros', 'f-enc': 'enc',
   'f-obs': 'obs', 'f-just': 'justificativa', 'f-just-h': 'justHorario' };
 const mapaChegada = { 'c-tanque': 'tanque', 'c-hora': 'hora', 'c-nf': 'nf', 'c-litros': 'litros', 'c-valor': 'valor', 'c-antes': 'antes',
   'c-depois': 'depois', 'c-placa': 'placa', 'c-carreta': 'carreta', 'c-motorista': 'motorista', 'c-cpf': 'cpf' };
@@ -402,7 +456,16 @@ conteudo.addEventListener('input', e => {
   const id = e.target.id;
   if (mapaForm[id]) {
     form[mapaForm[id]] = e.target.value;
-    if (id === 'f-placa') form.motorista = estado.veiculos.find(v => v.placa === form.placa)?.motorista_sugerido || '';
+    aviso = null;
+  } else if (id === 'f-placa') {
+    // digitou a placa inteira e ela existe: já fica escolhida; senão mostra as sugestões
+    form.placaTxt = e.target.value;
+    escolherPlaca(estado.veiculos.find(v => v.placa === soPlaca(e.target.value))?.placa || '');
+    form.placaTxt = e.target.value;
+    aviso = null;
+  } else if (id === 'f-motorista') {
+    form.motoristaTxt = e.target.value;
+    form.motorista = estado.motoristas.find(m => semAcento(m) === semAcento(e.target.value)) || '';
     aviso = null;
   } else if (mapaChegada[id]) chegada[mapaChegada[id]] = e.target.value;
   else if (mapaVeiculo[id]) novoVeiculo[mapaVeiculo[id]] = e.target.value;
@@ -418,6 +481,14 @@ conteudo.addEventListener('click', async e => {
   if (alvo('[data-tema]')) { definirTema(alvo('[data-tema]').dataset.tema); return; }
   if (alvo('[data-guia]')) { guia = alvo('[data-guia]').dataset.guia; return render(); }
   if (alvo('[data-bomba]')) { form.bomba = Number(alvo('[data-bomba]').dataset.bomba); aviso = null; return render(); }
+  if (alvo('[data-sug-placa]')) {
+    escolherPlaca(alvo('[data-sug-placa]').dataset.sugPlaca); aviso = null; render();
+    return $(form.motorista ? 'f-km' : 'f-motorista')?.focus();
+  }
+  if (alvo('[data-sug-motorista]')) {
+    form.motorista = form.motoristaTxt = alvo('[data-sug-motorista]').dataset.sugMotorista; aviso = null; render();
+    return $('f-km')?.focus();
+  }
   if (alvo('[data-afericao-bomba]')) { afericao.bomba = Number(alvo('[data-afericao-bomba]').dataset.afericaoBomba); aviso = null; return render(); }
   if (alvo('[data-desconto]')) { form.desconto = alvo('[data-desconto]').dataset.desconto === 'sim'; return render(); }
   if (alvo('[data-frentista]')) { escolhido = Number(alvo('[data-frentista]').dataset.frentista); pin = ''; aviso = null; return render(); }
@@ -431,8 +502,9 @@ conteudo.addEventListener('click', async e => {
   if (acao === 'google') { try { await entrarComGoogle(); } catch (err) { aviso = { tipo: 'warn', texto: err.message }; render(); } }
   if (acao === 'tentar') await carregar();
   if (acao === 'trocar-google') { await sair(); conta = null; estado = null; semAcesso = false; login = null; gravar('frentistaLogin', null); render(); }
-  if (acao === 'novo-veiculo') { tela = 'veiculo'; novoVeiculo = { placa: '', capacidade: '', km: '', fotos: [] }; aviso = null; render(); }
-  if (acao === 'novo-motorista') { tela = 'motorista'; novoMotorista = { nome: '', cpf: '' }; aviso = null; render(); }
+  // o cadastro já vem com o que o frentista digitou na busca
+  if (acao === 'novo-veiculo') { tela = 'veiculo'; novoVeiculo = { placa: soPlaca(form.placaTxt), capacidade: '', km: '', fotos: [] }; aviso = null; render(); }
+  if (acao === 'novo-motorista') { tela = 'motorista'; novoMotorista = { nome: form.motoristaTxt.trim().toUpperCase(), cpf: '' }; aviso = null; render(); }
   if (acao === 'voltar') { tela = null; aviso = null; render(); }
   if (acao === 'atualizar') await executar(atualizarEstado);
   if (acao === 'enviar') await executar(enviarAbastecimento);
@@ -543,7 +615,7 @@ async function salvarVeiculo() {
   const r = await rpc('cadastrar_veiculo_app', { p_sessao: login.sessao, p_placa: f.placa, p_capacidade: parseNum(f.capacidade),
     p_km: f.km ? Math.round(parseNum(f.km)) : null, p_foto: caminho });
   await atualizarEstado();
-  form.placa = r.placa; tela = null;
+  escolherPlaca(r.placa); tela = null;
   aviso = { tipo: 'ok', texto: `Veículo ${r.placa} cadastrado.` };
 }
 
@@ -551,7 +623,7 @@ async function salvarMotorista() {
   const f = novoMotorista;
   const r = await rpc('cadastrar_motorista_app', { p_sessao: login.sessao, p_nome: f.nome, p_cpf: f.cpf });
   await atualizarEstado();
-  form.motorista = r.nome; tela = null;
+  form.motorista = form.motoristaTxt = r.nome; tela = null;
   aviso = { tipo: 'ok', texto: `Motorista ${r.nome} cadastrado.` };
 }
 

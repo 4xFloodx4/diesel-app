@@ -18,7 +18,8 @@ export const GUIA = {
       <div class="atencao"><b>Nunca passe seu PIN.</b> Tudo o que for lançado com ele fica no seu nome. Errou 5 vezes, o app bloqueia por 5 minutos; se esqueceu, peça um PIN novo ao supervisor.</div>`],
     ['bomba', 'Abastecer um caminhão', 'O procedimento de todo abastecimento', `<ol><li>Antes de abastecer, confira a placa e quem é o motorista.</li>
       <li>Abasteça. Anote ou memorize os <b>litros do visor</b> e o <b>encerrante</b> que a bomba mostra no final.</li>
-      <li>No app: toque na <b>bomba em que abasteceu</b> (ela não vem marcada; cada bomba tem o próprio encerrante), escolha a placa e confira o motorista sugerido.</li>
+      <li>No app: toque na <b>bomba em que abasteceu</b> (ela não vem marcada; cada bomba tem o próprio encerrante).</li>
+      <li>Digite o <b>começo da placa</b> e toque nela na lista. Os motoristas daquela placa aparecem: toque no certo, ou digite o começo do nome (ex.: "jo si" acha JOÃO DA SILVA).</li>
       <li>Digite o <b>KM do painel</b> do caminhão, os litros e o encerrante final.</li>
       <li>Confira as bolinhas: verde é tudo certo. Vermelho quer dizer que algum número não bate.</li>
       <li>Responda se o diesel foi <b>descontado do motorista</b>.</li><li>Toque em <b>Enviar abastecimento</b> e espere a mensagem de lançado.</li></ol>
@@ -28,9 +29,10 @@ export const GUIA = {
       <div class="dica">O abastecimento fica parado em "Aguardando autorização" até o supervisor decidir. Você acompanha em <b>Turno</b>.</div>`],
     ['relogio', 'Fora do horário do turno', 'Das {FECHAMENTO} às {ABERTURA}', `<p>O turno vai das <b>{ABERTURA} às {FECHAMENTO}</b>. Lançamento fora desse horário só entra com justificativa e autorização do supervisor ou do administrador.</p>
       <div class="atencao"><b>Depois do fechamento do turno</b>, não dá para lançar mais nada com a data daquele dia.</div>`],
-    ['caminhao', 'Placa ou motorista que não está na lista', 'Cadastro pelo app', `<ol><li>Toque em <b>+ Placa não está na lista</b> (ou motorista).</li>
+    ['caminhao', 'Placa ou motorista que não está na lista', 'Cadastro pelo app', `<ol><li>Se a busca não achar, toque em <b>+ Cadastrar</b>: o cadastro já vem com o que você digitou.</li>
       <li>Veículo: digite a placa, o tamanho do tanque e o KM, e <b>tire uma foto do caminhão mostrando a placa</b>.</li>
-      <li>Motorista: nome completo e CPF (o KMM exige o CPF).</li></ol><div class="dica">Depois de cadastrado, só o supervisor pode alterar. Errou algo? Avise.</div>`],
+      <li>Motorista: nome completo e CPF (o KMM exige o CPF).</li></ol><div class="dica">Ao enviar o abastecimento, o motorista fica ligado àquela placa e aparece da próxima vez.
+      Depois de cadastrado, só o supervisor pode alterar. Errou algo? Avise.</div>`],
     ['regua', 'Chegada de diesel e fechamento do turno', 'Régua, nota fiscal e fotos', `<ol><li><b>Chegada:</b> meça a régua antes da descarga, descarregue e meça de novo. Lance a NF, os litros e as duas medidas, e tire foto da nota.</li>
       <li><b>Fechamento (até as {FECHAMENTO}):</b> meça cada tanque com a régua, digite as medidas, tire foto da régua e toque em <b>Fechar turno</b>.</li></ol>
       <div class="dica">Se a medida ficar mais de 20 L longe do esperado, o supervisor é avisado. Meça com calma e com o caminhão já fora da bomba.</div>`],

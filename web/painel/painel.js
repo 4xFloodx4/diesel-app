@@ -34,6 +34,7 @@ const pill = s => `<span class="pill ${esc(classeStatus(s))}">${esc(s)}</span>`;
 const placa = p => `<span class="placa">${esc(p)}</span>`;
 const mascaraCpf = c => c ? `***.***.${esc(c.slice(6, 9))}-${esc(c.slice(9))}` : '';
 const soDigitos = v => String(v ?? '').replace(/\D/g, '');
+const soPlaca = v => String(v ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 const hora = iso => String(iso || '').slice(11, 16);
 const quandoLocal = iso => iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '') : '';
 const primeiroNome = n => String(n || '').split(' ')[0];
@@ -628,26 +629,35 @@ TELAS.frentistas = async () => {
 
 // ---------- Veículos e motoristas ----------
 TELAS.veiculos = async () => {
-  const c = await carregar(async () => ({ ...(await carregarCadastros()), fv: await contarFotos('veiculo') }), d => ({ ...cadDemo(d), fv: {} }));
+  const c = await carregar(async () => ({ ...(await carregarCadastros()), fv: await contarFotos('veiculo'),
+    vinculos: await consulta(supabase.from('veiculo_motoristas').select('placa, motorista_id, motoristas(nome, cpf)').limit(20000)) }),
+  d => ({ ...cadDemo(d), fv: {}, vinculos: d.vinculos }));
   if (!c) return;
   est.cad = c;
+  const porPlaca = c.vinculos.reduce((m, x) => ((m[x.placa] ||= []).push(x), m), {});
   return `${cabeca('Veículos e motoristas', 'Cadastros usados nas conferências e no KMM. O frentista só cadastra o que não existe; alterar é aqui.')}
+    ${nativo ? '' : `<section class="painel"><header><h2>Base em Excel</h2><span>veículos, motoristas e quem dirige cada placa</span></header>
+      <div class="corpo"><div class="acoes"><button class="btn small" type="button" data-acao="exportar-base">Exportar base (Excel)</button>
+        ${rotulo('Importar base (Excel ou CSV)', '<input type="file" accept=".xlsx,.xls,.csv" data-importar-base>')}</div>
+        <p class="hint">A planilha tem 3 abas: <b>Veiculos</b> (placa, capacidade_tanque_l, km_inicial, ativo), <b>Motoristas</b> (nome, cpf, ativo) e
+          <b>Vinculos</b> (placa, motorista, cpf). O jeito mais fácil: exporte, edite no Excel e importe de volta. A importação inclui e atualiza;
+          para tirar alguém de uso, ponha <b>Não</b> em "ativo". Vínculo se remove aqui na lista, no × ao lado do nome.</p></div></section>`}
     <div class="duas">
       <section class="painel"><header><h2>Veículos</h2><span>${c.veiculos.length} cadastrado(s)</span></header>
         <div class="corpo"><form class="formulario" data-form="veiculos">
           ${campo('Placa', 'placa', 'required maxlength="8" autocomplete="off"')}${campo('Tanque do veículo (L)', 'capacidade_l', 'class="num" inputmode="decimal" required')}
           ${campo('Último KM conhecido', 'km_inicial', 'class="num" inputmode="numeric"')}${simNao('Ativo', 'ativo')}
-          <button class="btn small" type="submit">Salvar veículo</button></form>
-          ${nativo ? '' : rotulo('Importar CSV do KMM (placa;capacidade_tanque_l;ultimo_km)', '<input type="file" accept=".csv,text/csv" data-importar="veiculos">')}</div>
-        <div class="tabela"><table><thead><tr><th>Placa</th><th class="n">Tanque</th><th class="n">KM inicial</th><th>Ativo</th><th></th></tr></thead><tbody>
+          <button class="btn small" type="submit">Salvar veículo</button></form></div>
+        <div class="tabela"><table><thead><tr><th>Placa</th><th class="n">Tanque</th><th class="n">KM inicial</th><th>Ativo</th><th>Motoristas</th><th></th></tr></thead><tbody>
         ${c.veiculos.map(v => `<tr><td>${placa(v.placa)}<span class="sub">${esc(v.criado_por || 'Painel')}</span></td><td class="n">${nf(v.capacidade_l, 0)}</td><td class="n">${nf(v.km_inicial, 0)}</td><td>${v.ativo ? 'Sim' : 'Não'}</td>
+          <td class="quebra">${(porPlaca[v.placa] || []).map(x => `<span class="vinculo">${esc(x.motoristas?.nome || '')}<button type="button" class="link" data-acao="desvincular"
+            data-id="${esc(v.placa)}" data-motorista="${esc(x.motorista_id)}" aria-label="Tirar ${esc(x.motoristas?.nome || '')} da placa ${esc(v.placa)}">×</button></span>`).join(' ')}</td>
           <td><div class="acoes">${botaoEditar('veiculos', v.placa)}${botaoFotos('veiculo', v.placa, `Veículo ${v.placa}`, c.fv[v.placa])}
             <button class="btn small ghost" type="button" data-acao="foto-veiculo" data-id="${esc(v.placa)}">+ Foto</button></div></td></tr>`).join('')}</tbody></table></div></section>
       <section class="painel"><header><h2>Motoristas</h2><span>${c.motoristas.length} cadastrado(s)</span></header>
         <div class="corpo"><form class="formulario" data-form="motoristas">
           ${campo('Nome completo', 'nome', 'required maxlength="120" autocomplete="off"')}${campo('CPF', 'cpf', 'class="num" inputmode="numeric" required maxlength="14" autocomplete="off"')}
           ${simNao('Ativo', 'ativo')}<button class="btn small" type="submit">Salvar motorista</button></form>
-          ${nativo ? '' : rotulo('Importar CSV do KMM (nome;cpf)', '<input type="file" accept=".csv,text/csv" data-importar="motoristas">')}
           <p class="hint">Ao editar um motorista, digite o CPF completo de novo (na lista ele aparece mascarado).</p></div>
         <div class="tabela"><table><thead><tr><th>Nome</th><th>CPF</th><th>Ativo</th><th></th></tr></thead><tbody>
         ${c.motoristas.map(m => `<tr><td>${esc(m.nome)}<span class="sub">${esc(m.criado_por || 'Painel')}</span></td><td class="num">${mascaraCpf(m.cpf)}</td><td>${m.ativo ? 'Sim' : 'Não'}</td>
@@ -813,6 +823,12 @@ document.addEventListener('click', async e => {
   else if (acao === 'limpar-filtros') { est.filtros = { de: '', ate: '', status: '', placa: '' }; abrir('abastecimentos'); }
   else if (acao === 'exportar') exportarExcel();
   else if (acao === 'exportar-auditoria') exportarAuditoria();
+  else if (acao === 'exportar-base') exportarBase(est.cad);
+  else if (acao === 'desvincular') {
+    if (demo()) { avisar('Modo demonstração: nada foi gravado.', 'info'); return; }
+    const r = await agir(() => consulta(supabase.from('veiculo_motoristas').delete().eq('placa', id).eq('motorista_id', b.dataset.motorista).select()));
+    if (r?.length) { avisar('Motorista tirado da placa.'); abrir('veiculos', { semCarregando: true }); } else if (r) avisar('Nada foi alterado: sem permissão.', 'warn');
+  }
   else if (acao === 'gerar') {
     const r = await agir(() => rpc('gerar_lote'));
     if (r) { avisar(`Lote ${r.id} gerado com ${r.quantidade} registro(s). ${avisosLote(r.linhas).join(' ')}`); baixarLote(r.id, r.linhas); abrir('lotes', { semCarregando: true }); }
@@ -878,28 +894,91 @@ function mostrarAuditoria() {
 }
 trabalho.addEventListener('input', e => { if (e.target.id === 'aud-busca') { est.aud.busca = e.target.value; mostrarAuditoria(); } });
 
-// Importação de CSV do KMM, linha por linha, para mostrar exatamente quais deram erro
-trabalho.addEventListener('change', async e => {
-  const tipo = e.target.dataset.importar;
-  if (!['veiculos', 'motoristas'].includes(tipo) || !e.target.files[0]) return;
-  if (demo()) { avisar('Modo demonstração: nada foi gravado.', 'info'); return; }
-  if (e.target.files[0].size > 2_000_000) { avisar('Arquivo grande demais (máximo 2 MB).', 'warn'); return; }
-  const texto = (await e.target.files[0].text()).replace(/^﻿/, '');
-  const [cab = '', ...linhas] = texto.split(/\r?\n/).filter(l => l.trim());
-  const nomes = cab.split(';').map(s => s.trim().toLowerCase());
-  let ok = 0; const erros = [];
-  for (const [i, l] of linhas.entries()) {
-    const v = Object.fromEntries(l.split(';').map((x, j) => [nomes[j], x.trim()]));
-    const reg = tipo === 'veiculos'
-      ? { placa: String(v.placa || '').toUpperCase().replace(/[^A-Z0-9]/g, ''), capacidade_l: parseNum(v.capacidade_tanque_l), km_inicial: v.ultimo_km ? Number(soDigitos(v.ultimo_km)) : null, ativo: true }
-      : { nome: String(v.nome || '').trim().toUpperCase(), cpf: soDigitos(v.cpf), ativo: true };
-    avisar(`Importando ${i + 1} de ${linhas.length}…`, 'info');
-    const r = await supabase.from(tipo).upsert(reg, { onConflict: tipo === 'veiculos' ? 'placa' : 'nome' });
-    if (r.error) erros.push(`Linha ${i + 2}: ${/check constraint|invalid input/.test(r.error.message) ? (tipo === 'veiculos' ? 'placa ou capacidade inválida' : 'CPF inválido') : r.error.message}`);
-    else ok++;
+// ---------- Base de veículos e motoristas em Excel ----------
+// Exporta as 3 abas no mesmo formato que a importação lê: dá para exportar, editar no Excel e importar de volta.
+function exportarBase(c) {
+  if (!c) return;
+  const simNaoTxt = b => (b ? 'Sim' : 'Não');
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['placa', 'capacidade_tanque_l', 'km_inicial', 'ativo'],
+    ...c.veiculos.map(v => [v.placa, Number(v.capacidade_l), v.km_inicial ?? '', simNaoTxt(v.ativo)])]), 'Veiculos');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['nome', 'cpf', 'ativo'],
+    ...c.motoristas.map(m => [m.nome, String(m.cpf), simNaoTxt(m.ativo)])]), 'Motoristas');   // CPF como texto: não perde zero à esquerda
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['placa', 'motorista', 'cpf'],
+    ...c.vinculos.map(x => [x.placa, x.motoristas?.nome || '', String(x.motoristas?.cpf || '')])]), 'Vinculos');
+  XLSX.writeFile(wb, `base_veiculos_motoristas_${hojeISO()}.xlsx`);
+}
+
+// Cabeçalho tolerante: "Capacidade (L)", "capacidade_tanque_l" e "CAPACIDADE" valem igual
+const chaveColuna = s => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+const coluna = (linha, ...nomes) => {
+  for (const [k, v] of Object.entries(linha)) if (nomes.includes(chaveColuna(k))) return String(v ?? '').trim();
+  return '';
+};
+const lerAtivo = s => (s === '' ? undefined : !/^(n|nao|false|0|inativ|desativ)/i.test(chaveColuna(s)));
+// O tipo de cada aba sai das colunas (o nome da aba não importa; um CSV do KMM também serve)
+function tipoDaAba(colunas) {
+  if (colunas.includes('nome') && colunas.includes('cpf')) return 'motoristas';
+  if (colunas.includes('placa') && (colunas.includes('motorista') || colunas.includes('cpf'))) return 'vinculos';
+  if (colunas.includes('placa')) return 'veiculos';
+  return null;
+}
+
+async function importarBase(arquivo) {
+  const csv = /\.csv$/i.test(arquivo.name);
+  const texto = csv ? (await arquivo.text()).replace(/^﻿/, '') : null;
+  // CSV lido como texto puro (raw): "600,5" é vírgula decimal, não milhar, e o CPF mantém o zero à esquerda
+  const wb = csv ? XLSX.read(texto, { type: 'string', raw: true, FS: texto.split(/\r?\n/)[0].includes(';') ? ';' : ',' })
+    : XLSX.read(await arquivo.arrayBuffer(), { type: 'array' });
+  const abas = { veiculos: [], motoristas: [], vinculos: [] };
+  for (const nome of wb.SheetNames) {
+    const linhas = XLSX.utils.sheet_to_json(wb.Sheets[nome], { defval: '' });
+    const tipo = linhas.length ? tipoDaAba(Object.keys(linhas[0]).map(chaveColuna)) : null;
+    if (tipo) abas[tipo].push(...linhas.map((l, i) => ({ l, linha: i + 2, aba: nome })));
   }
-  avisar(`${ok} importado(s).${erros.length ? ` ${erros.length} com erro: ${erros.slice(0, 20).join(' | ')}` : ''}`, erros.length ? 'warn' : 'ok');
+  const total = abas.veiculos.length + abas.motoristas.length + abas.vinculos.length;
+  if (!total) { avisar('Nenhuma aba reconhecida. Use as colunas do arquivo exportado (placa, nome, cpf…).', 'warn'); return; }
+  const resultado = { veiculos: 0, motoristas: 0, vinculos: 0 }, erros = [];
+  let feitos = 0;
+  // Ordem: veículos e motoristas antes dos vínculos, que dependem deles
+  for (const tipo of ['veiculos', 'motoristas']) {
+    for (const { l, linha, aba } of abas[tipo]) {
+      avisar(`Importando ${++feitos} de ${total}…`, 'info');
+      let reg;
+      if (tipo === 'veiculos') {
+        const cap = coluna(l, 'capacidade_tanque_l', 'capacidade_l', 'capacidade', 'tanque_l', 'tanque'), km = coluna(l, 'km_inicial', 'ultimo_km', 'km');
+        reg = { placa: soPlaca(coluna(l, 'placa')) };
+        if (cap) reg.capacidade_l = parseNum(cap);
+        if (km) reg.km_inicial = Number(soDigitos(km));
+      } else {
+        reg = { nome: coluna(l, 'nome').toUpperCase(), cpf: soDigitos(coluna(l, 'cpf')).padStart(11, '0') };
+      }
+      const ativo = lerAtivo(coluna(l, 'ativo'));
+      if (ativo !== undefined) reg.ativo = ativo;
+      const r = await supabase.from(tipo).upsert(reg, { onConflict: tipo === 'veiculos' ? 'placa' : 'nome' });
+      if (!r.error) { resultado[tipo]++; continue; }
+      const motivo = /null value/.test(r.error.message) ? 'falta a capacidade do tanque'
+        : /check constraint|invalid input/.test(r.error.message) ? (tipo === 'veiculos' ? 'placa ou capacidade inválida' : 'CPF inválido') : r.error.message;
+      erros.push(`${aba} linha ${linha}: ${motivo}`);
+    }
+  }
+  if (abas.vinculos.length) {
+    avisar(`Importando os vínculos (${abas.vinculos.length})…`, 'info');
+    const r = await chamar(() => rpc('importar_vinculos', { p_linhas: abas.vinculos.map(({ l, linha }) => ({
+      linha, placa: coluna(l, 'placa'), motorista: coluna(l, 'motorista', 'nome'), cpf: coluna(l, 'cpf') })) }));
+    if (r) { resultado.vinculos = r.ok; erros.push(...r.erros.map(x => `Vinculos ${x.replace(/^Linha/, 'linha')}`)); }
+  }
+  avisar(`Importado: ${resultado.veiculos} veículo(s), ${resultado.motoristas} motorista(s), ${resultado.vinculos} vínculo(s).`
+    + (erros.length ? ` ${erros.length} com erro: ${erros.slice(0, 20).join(' | ')}${erros.length > 20 ? ' …' : ''}` : ''), erros.length ? 'warn' : 'ok');
   abrir('veiculos', { semCarregando: true });
+}
+
+trabalho.addEventListener('change', async e => {
+  if (!e.target.hasAttribute('data-importar-base') || !e.target.files[0]) return;
+  if (demo()) { avisar('Modo demonstração: nada foi gravado.', 'info'); return; }
+  if (e.target.files[0].size > 5_000_000) { avisar('Arquivo grande demais (máximo 5 MB).', 'warn'); return; }
+  try { await importarBase(e.target.files[0]); } catch (err) { avisar(`Não foi possível ler a planilha: ${err.message}`, 'warn'); }
+  e.target.value = '';
 });
 
 // Dica do gráfico de saída por hora

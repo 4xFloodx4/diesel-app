@@ -118,6 +118,10 @@ td.n { font-family: var(--f-num); font-variant-numeric: tabular-nums; }
 td .placa { font-size: 13px; }
 td .sub { display: block; font-size: 12px; color: var(--tinta-3); white-space: normal; max-width: 360px; }
 td.quebra { white-space: normal; min-width: 200px; }
+/* Motoristas vinculados à placa, com o × para tirar o vínculo */
+.vinculo { display: inline-flex; align-items: center; gap: 2px; font-size: 12.5px; background: var(--chao); border: 1px solid var(--risco); border-radius: 999px;
+  padding: 1px 2px 1px 9px; margin: 2px 0; white-space: nowrap; }
+.vinculo .link { padding: 2px 6px; font-size: 14px; line-height: 1; text-decoration: none; }
 tr.divergente td { background: var(--alerta-fundo); }
 .inline { display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
 .inline input { min-height: 34px; padding: 5px 9px; width: 150px; }

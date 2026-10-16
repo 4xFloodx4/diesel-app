@@ -50,6 +50,11 @@ export function dadosDemo() {
   ];
   const chegadas = [{ id: 7, tanque: 'TQ01', data_hora: `${hojeISO()}T09:20:00`, nf: '45871', litros: 5000, valor_total: 29850, regua_antes: 6300, regua_depois: 11290,
     placa_caminhao: 'TNK1B22', placa_carreta: null, motorista: 'Fornecedor', frentistas: { nome: 'Ana Ribeiro' }, alerta: null }];
+  // Quem dirige cada placa: sai dos próprios lançamentos, como no banco
+  const vinculos = [...new Map(abastecimentos.map(a => {
+    const m = motoristas.find(x => x.nome === a.motorista);
+    return [`${a.placa}|${m.id}`, { placa: a.placa, motorista_id: m.id, motoristas: { nome: m.nome, cpf: m.cpf } }];
+  })).values()];
   // Aferição semanal: a bomba 1 está em dia; a da bomba 2 venceu e a última deu diferença acima da tolerância
   const afericoes = [
     { id: 3, bomba: 1, data_hora: `${dia(2)}T07:10:00`, medida_l: 20, visor_l: 20.04, diferenca_l: 0.04, frentistas: { nome: 'Ana Ribeiro' } },
@@ -81,6 +86,6 @@ export function dadosDemo() {
       detalhes: { antes: { email: 'posto2@empresa-demo.com.br', nome: 'Celular posto 2', papel: 'posto', ativo: true }, depois: { email: 'posto2@empresa-demo.com.br', nome: 'Celular posto 2', papel: 'posto', ativo: false } } },
   ];
   const porStatus = abastecimentos.reduce((m, a) => ((m[a.status] = (m[a.status] || 0) + 1), m), {});
-  return { abastecimentos, veiculos, motoristas, tanques, bombas, hoje, fechamentos, chegadas, afericoes, frentistas, acessos, lotes, auditoria, porStatus,
+  return { abastecimentos, veiculos, motoristas, vinculos, tanques, bombas, hoje, fechamentos, chegadas, afericoes, frentistas, acessos, lotes, auditoria, porStatus,
     configuracoes: { abertura: '05:00', fechamento: '23:00' }, fotos: {} };
 }

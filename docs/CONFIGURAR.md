@@ -97,7 +97,7 @@ Para atualizar o app depois, crie uma nova release com tag maior (`v1.0.1`, `v1.
 3. **Cadastros** (Tanques e fechamentos; Veículos e motoristas):
    - tanques: capacidade e saldo medido no dia da implantação;
    - bombas: encerrante lido no dia da implantação. Posto com 1 tanque e 2 bombas: cadastre o tanque (ex.: `TQ01`) e as bombas 1 e 2, as duas ligadas a `TQ01`, cada uma com o próprio encerrante. No app, o frentista escolhe a bomba a cada lançamento, e o fechamento soma o que saiu pelas duas;
-   - veículos e motoristas: importe os CSV exportados do KMM (`placa;capacidade_tanque_l;ultimo_km` e `nome;cpf`).
+   - veículos e motoristas: em **Veículos e motoristas › Base em Excel**, importe a planilha com as abas `Veiculos` (placa, capacidade_tanque_l, km_inicial, ativo), `Motoristas` (nome, cpf, ativo) e `Vinculos` (placa, motorista, cpf). O mais fácil é clicar em **Exportar base**, preencher e importar de volta. Os CSV do KMM (`placa;capacidade_tanque_l;ultimo_km` e `nome;cpf`) também são aceitos.
 
 **No celular do posto:**
 1. Abra no Chrome o link da release e baixe o `abastecimento-diesel.apk`.

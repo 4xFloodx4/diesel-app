@@ -166,6 +166,17 @@ create table if not exists motoristas (
 alter table motoristas add column if not exists criado_por text;
 alter table motoristas add column if not exists criado_em timestamptz default now();
 
+-- Quais motoristas costumam dirigir cada placa: no app, ao escolher a placa, eles aparecem primeiro.
+-- Nasce do próprio lançamento (placa + motorista cadastrados) e da planilha importada no painel.
+create table if not exists veiculo_motoristas (
+  placa         text not null references veiculos (placa) on update cascade on delete cascade,
+  motorista_id  bigint not null references motoristas (id) on delete cascade,
+  criado_por    text,
+  criado_em     timestamptz not null default now(),
+  primary key (placa, motorista_id)
+);
+create index if not exists ix_vinculo_motorista on veiculo_motoristas (motorista_id);
+
 create table if not exists tanques (
   codigo         text primary key check (codigo ~ '^[A-Z0-9 _-]{1,20}$'),
   capacidade_l   numeric(10, 1) not null check (capacidade_l > 0),
@@ -183,7 +194,7 @@ create table if not exists bombas (
 create or replace function normalizar_cadastro() returns trigger
 language plpgsql as $$
 begin
-  if tg_table_name = 'veiculos' then new.placa := normaliza_placa(new.placa);
+  if tg_table_name in ('veiculos', 'veiculo_motoristas') then new.placa := normaliza_placa(new.placa);
   elsif tg_table_name = 'motoristas' then
     new.nome := normaliza_nome(new.nome);
     new.cpf := regexp_replace(new.cpf, '\D', '', 'g');
@@ -349,7 +360,11 @@ declare v_novo jsonb := case when tg_op <> 'DELETE' then to_jsonb(new) end;
 begin
   if v_novo ? 'cpf' then v_novo := v_novo || jsonb_build_object('cpf', '***' || right(v_novo ->> 'cpf', 2)); end if;
   if v_velho ? 'cpf' then v_velho := v_velho || jsonb_build_object('cpf', '***' || right(v_velho ->> 'cpf', 2)); end if;
-  v_chave := coalesce(v_novo, v_velho) ->> (case tg_table_name when 'veiculos' then 'placa' when 'tanques' then 'codigo'
+  if tg_table_name = 'veiculo_motoristas' then   -- o histórico mostra o nome, não só o número do motorista
+    if v_novo is not null then v_novo := v_novo || jsonb_build_object('motorista', (select nome from motoristas where id = new.motorista_id)); end if;
+    if v_velho is not null then v_velho := v_velho || jsonb_build_object('motorista', (select nome from motoristas where id = old.motorista_id)); end if;
+  end if;
+  v_chave := coalesce(v_novo, v_velho) ->> (case tg_table_name when 'veiculos' then 'placa' when 'veiculo_motoristas' then 'placa' when 'tanques' then 'codigo'
                                              when 'bombas' then 'numero' when 'acessos' then 'email' else 'id' end);
   perform auditar('cadastro.' || tg_table_name || '.' || lower(tg_op), tg_table_name, v_chave,
                   jsonb_build_object('antes', v_velho, 'depois', v_novo));
@@ -382,7 +397,7 @@ create trigger proteger before insert or update or delete on acessos
 do $$
 declare t text;
 begin
-  foreach t in array array['veiculos', 'motoristas', 'frentistas', 'tanques', 'bombas', 'acessos', 'configuracoes'] loop
+  foreach t in array array['veiculos', 'motoristas', 'veiculo_motoristas', 'frentistas', 'tanques', 'bombas', 'acessos', 'configuracoes'] loop
     execute format('drop trigger if exists normalizar on %I', t);
     execute format('create trigger normalizar before insert or update on %I for each row execute function normalizar_cadastro()', t);
     execute format('drop trigger if exists auditar on %I', t);
@@ -639,7 +654,10 @@ begin
     'veiculos', coalesce((select jsonb_agg(jsonb_build_object(
         'placa', v.placa, 'capacidade_l', v.capacidade_l,
         'km_anterior', greatest(v.km_inicial, (select max(km) from abastecimentos a where a.placa = v.placa and a.status in ('Pronto', 'Em lote', 'Lançado'))),
-        'motorista_sugerido', (select a.motorista from abastecimentos a where a.placa = v.placa order by a.id desc limit 1)
+        'motorista_sugerido', (select a.motorista from abastecimentos a where a.placa = v.placa order by a.id desc limit 1),
+        -- motoristas vinculados à placa (ativos), para o app mostrar ao escolher a placa
+        'motoristas', coalesce((select jsonb_agg(m.nome order by m.nome) from veiculo_motoristas vm
+                                  join motoristas m on m.id = vm.motorista_id and m.ativo where vm.placa = v.placa), '[]')
       ) order by v.placa) from veiculos v where v.ativo), '[]'),
     -- O celular não recebe CPF
     'motoristas', coalesce((select jsonb_agg(nome order by nome) from motoristas where ativo), '[]'),
@@ -739,6 +757,12 @@ begin
     select * into v_ex from abastecimentos where uuid = (r ->> 'uuid')::uuid;
     return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'status', v_ex.status, 'problemas', v_ex.problemas);
   end if;
+  -- Placa e motorista cadastrados: fica vinculado, e na próxima vez o motorista aparece ao escolher a placa
+  insert into veiculo_motoristas (placa, motorista_id, criado_por)
+  select v.placa, m.id, 'Frentista: ' || (select nome from frentistas where id = v_frent)
+    from veiculos v join motoristas m on m.nome = c ->> 'motorista' and m.ativo
+   where v.placa = c ->> 'placa'
+  on conflict do nothing;
   perform auditar('abastecimento.recebido', 'abastecimento', v_id::text,
                   jsonb_build_object('placa', c ->> 'placa', 'litros', v_lt, 'bomba', v_bomba, 'status', v_status, 'frentista_id', v_frent,
                                      'frentista', (select nome from frentistas where id = v_frent), 'desconto', v_desconto, 'fora_horario', v_fora));
@@ -892,6 +916,36 @@ begin
 end $$;
 
 -- ---------- Funções do painel ----------
+-- Vínculos placa ↔ motorista vindos da planilha: [{linha, placa, motorista, cpf}]. O motorista é achado pelo CPF
+-- (se vier) ou pelo nome. Só inclui: não apaga vínculo que não está na planilha. Devolve quantos deram certo e os erros.
+create or replace function importar_vinculos(p_linhas jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare l jsonb; i integer := 0; v_linha text; v_placa text; v_cpf text; v_mot bigint; v_ok integer := 0; v_erros text[] := '{}';
+begin
+  perform exigir(array['supervisor']);
+  if jsonb_typeof(p_linhas) is distinct from 'array' or jsonb_array_length(p_linhas) > 5000 then
+    raise exception 'Lista de vínculos inválida (máximo 5000 linhas).' using errcode = '22023';
+  end if;
+  for l in select value from jsonb_array_elements(p_linhas) loop
+    i := i + 1;
+    v_linha := coalesce(l ->> 'linha', (i + 1)::text);
+    v_placa := normaliza_placa(l ->> 'placa');
+    v_cpf := nullif(regexp_replace(coalesce(l ->> 'cpf', ''), '\D', '', 'g'), '');
+    select id into v_mot from motoristas
+     where case when v_cpf is not null then cpf = lpad(v_cpf, 11, '0') else nome = normaliza_nome(l ->> 'motorista') end
+     limit 1;
+    if not exists (select 1 from veiculos where placa = v_placa) then
+      v_erros := v_erros || format('Linha %s: placa %s não cadastrada', v_linha, coalesce(nullif(v_placa, ''), '(vazia)'));
+    elsif v_mot is null then
+      v_erros := v_erros || format('Linha %s: motorista %s não cadastrado', v_linha, coalesce(v_cpf, nullif(trim(l ->> 'motorista'), ''), '(vazio)'));
+    else
+      insert into veiculo_motoristas (placa, motorista_id, criado_por) values (v_placa, v_mot, 'Planilha') on conflict do nothing;
+      v_ok := v_ok + 1;
+    end if;
+  end loop;
+  return jsonb_build_object('ok', v_ok, 'erros', to_jsonb(v_erros));
+end $$;
+
 create or replace function decidir_autorizacao(p_id bigint, p_aprovar boolean, p_motivo text) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare v abastecimentos; c jsonb;
@@ -1079,7 +1133,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['acessos', 'frentistas', 'frentistas_pin', 'sessoes_frentista', 'veiculos', 'motoristas', 'tanques',
+  foreach t in array array['acessos', 'frentistas', 'frentistas_pin', 'sessoes_frentista', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques',
                            'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'fotos', 'auditoria', 'configuracoes'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon', t);
@@ -1087,12 +1141,12 @@ begin
     execute format('drop policy if exists supervisor_edita on %I', t);
   end loop;
   -- Leitura pelo painel (PINs, sessões e auditoria têm regra própria)
-  foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'tanques', 'bombas',
+  foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'bombas',
                            'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'fotos', 'configuracoes'] loop
     execute format('create policy supervisor_le on %I for select to authenticated using (sou_gestor())', t);
   end loop;
   -- Cadastros: supervisor e administrador editam direto (com histórico automático pelos gatilhos)
-  foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'tanques', 'bombas'] loop
+  foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'bombas'] loop
     execute format('create policy supervisor_edita on %I for all to authenticated using (sou_gestor()) with check (sou_gestor())', t);
   end loop;
 end $$;
@@ -1144,7 +1198,7 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frent
   registrar_abastecimento(text, jsonb), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[]),
   registrar_afericao(text, jsonb, text[]),
   cadastrar_veiculo_app(text, text, numeric, integer, text), cadastrar_motorista_app(text, text, text),
-  definir_pin(bigint, text), decidir_autorizacao(bigint, boolean, text),
+  definir_pin(bigint, text), decidir_autorizacao(bigint, boolean, text), importar_vinculos(jsonb),
   decidir_abastecimento(bigint, text, text, jsonb), marcar_erro_kmm(bigint, text),
   gerar_lote(), linhas_lote(bigint), fechar_lote(bigint, text), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)
   to authenticated;

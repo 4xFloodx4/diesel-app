@@ -227,6 +227,19 @@ test('aferição semanal: bomba, visor na medida de 20 L e foto; o encerrante an
   assert.equal((await como(POSTO, 'select * from afericoes')).length, 0);   // celular não lê a tabela direto
 });
 
+test('placa puxa os motoristas vinculados: o lançamento cria o vínculo sozinho', async () => {
+  const e = await rpc(POSTO, 'estado_posto');
+  const motoristasDa = p => e.veiculos.find(v => v.placa === p).motoristas;
+  assert.deepEqual(motoristasDa('ABC1D23'), ['JOAO DA SILVA']);
+  assert.deepEqual(motoristasDa('DEF4567'), ['JOAO DA SILVA']);
+  assert.equal((await db.query("select count(*)::int as n from veiculo_motoristas where placa = 'ABC1D23'")).rows[0].n, 1);   // vários lançamentos, um vínculo
+  const aud = (await db.query("select papel, detalhes from auditoria where acao = 'cadastro.veiculo_motoristas.insert' order by id limit 1")).rows[0];
+  assert.equal(aud.papel, 'posto');
+  assert.equal(aud.detalhes.depois.motorista, 'JOAO DA SILVA');   // o histórico mostra o nome
+  assert.equal((await como(POSTO, 'select * from veiculo_motoristas')).length, 0);
+  await assert.rejects(como(POSTO, "insert into veiculo_motoristas (placa, motorista_id) values ('ABC1D23', 1)"), /row-level security/);
+});
+
 // ---------- Cadastros pelo frentista ----------
 test('frentista cadastra veículo novo com foto, mas não altera um existente', async () => {
   await assert.rejects(rpc(POSTO, 'cadastrar_veiculo_app', { p_sessao: sessao, p_placa: 'GHI8J90', p_capacidade: 500, p_km: 220000, p_foto: null }), /foto/);
@@ -246,6 +259,24 @@ test('frentista cadastra motorista com CPF válido; duplicado é recusado', asyn
   const r = await rpc(POSTO, 'cadastrar_motorista_app', { p_sessao: sessao, p_nome: 'Maria Souza', p_cpf: '111.444.777-35' });
   assert.equal(r.nome, 'MARIA SOUZA');
   await assert.rejects(rpc(POSTO, 'cadastrar_motorista_app', { p_sessao: sessao, p_nome: 'Outra Pessoa', p_cpf: '11144477735' }), /já cadastrado/);
+});
+
+test('supervisor importa vínculos da planilha: acha o motorista pelo nome ou CPF e aponta os erros', async () => {
+  await assert.rejects(rpc(POSTO, 'importar_vinculos', { p_linhas: [{ placa: 'ABC1D23', motorista: 'JOAO DA SILVA' }] }), /Acesso negado/);
+  const r = await rpc(CHEFE, 'importar_vinculos', { p_linhas: [
+    { linha: 2, placa: 'def-4567', motorista: 'maria souza' },
+    { linha: 3, placa: 'ZZZ9Z99', motorista: 'JOAO DA SILVA' },
+    { linha: 4, placa: 'ABC1D23', cpf: '111.444.777-35' },
+    { linha: 5, placa: 'ABC1D23', motorista: 'João da Silva' },   // já existe: conta como certo e não duplica
+    { linha: 6, placa: 'ABC1D23', motorista: 'Ninguém Cadastrado' },
+  ] });
+  assert.equal(r.ok, 3);
+  assert.deepEqual(r.erros, ['Linha 3: placa ZZZ9Z99 não cadastrada', 'Linha 6: motorista Ninguém Cadastrado não cadastrado']);
+  const e = await rpc(POSTO, 'estado_posto');
+  assert.deepEqual(e.veiculos.find(v => v.placa === 'ABC1D23').motoristas, ['JOAO DA SILVA', 'MARIA SOUZA']);
+  assert.deepEqual(e.veiculos.find(v => v.placa === 'DEF4567').motoristas, ['JOAO DA SILVA', 'MARIA SOUZA']);
+  // o supervisor tira um vínculo pelo painel
+  assert.equal((await como(CHEFE, "delete from veiculo_motoristas where placa = 'DEF4567' and motorista_id = (select id from motoristas where nome = 'MARIA SOUZA') returning placa")).length, 1);
 });
 
 // ---------- Chegada, fechamento e fotos ----------

@@ -25,6 +25,19 @@ html, body { height: 100%; }
 .bombas button[aria-pressed="true"] { background: var(--diesel); border-color: var(--diesel); color: #fff; }
 .bombas button[aria-pressed="true"] small { color: #fff; opacity: .85; }
 
+/* Busca de placa e motorista: sugestões que o frentista toca */
+.busca { text-transform: uppercase; }
+.busca::placeholder { text-transform: none; }
+.escolhido { font-size: 13px; font-weight: 600; color: var(--ok); }
+.sugestoes { display: flex; flex-direction: column; gap: 6px; }
+.sugestoes button { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-height: 46px; padding: 8px 12px; text-align: left;
+  border: 1px solid var(--risco-forte); border-radius: 8px; background: var(--placa); color: var(--tinta); cursor: pointer; }
+.sugestoes b { font: 600 15px var(--f-num); letter-spacing: .02em; }
+.sugestoes small { font-size: 12px; color: var(--tinta-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.vinculados { display: flex; flex-wrap: wrap; gap: 6px; }
+.vinculados button { min-height: 40px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--diesel); background: var(--placa); color: var(--tinta);
+  font-weight: 600; font-size: 13px; cursor: pointer; }
+
 .medidor { background: var(--placa); border: 1px solid var(--risco); border-radius: 10px; padding: 10px 12px; display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; font-size: 13.5px; }
 .medidor > span:nth-child(odd) { color: var(--tinta-2); }
 .medidor .v { font-family: var(--f-num); font-weight: 500; text-align: right; color: var(--tinta); }

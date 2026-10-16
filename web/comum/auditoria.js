@@ -112,6 +112,7 @@ export function descrever(e, ctx = {}) {
         const reg = d.depois || d.antes || {};
         const coisa = {
           veiculos: `o veículo ${placa(reg.placa || e.entidade_id)}`, motoristas: `o motorista <b>${esc(reg.nome)}</b>`,
+          veiculo_motoristas: `o motorista <b>${esc(reg.motorista || '')}</b> na placa ${placa(reg.placa || e.entidade_id)}`,
           frentistas: `o frentista <b>${esc(reg.nome)}</b>`, tanques: `o tanque <b>${esc(reg.codigo)}</b>`, bombas: `a bomba <b>${esc(reg.numero)}</b>`,
           acessos: `o acesso de <b>${esc(reg.nome)}</b> (${esc(reg.email)})`, configuracoes: 'o horário do turno',
         }[tabela] || `${esc(tabela)} ${id}`;
