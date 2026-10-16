@@ -8,6 +8,8 @@ import { planilhaKMM, avisosLote } from '../comum/kmm.js';
 const $ = id => document.getElementById(id);
 const pagina = $('pagina');
 let aba = 'resumo';
+let meuPapel = null;
+let minhaConta = null;
 let cad = null;
 let filtros = { de: '', ate: '', status: '', placa: '' };
 const pill = s => `<span class="pill ${classeStatus(s)}">${esc(s)}</span>`;
@@ -49,8 +51,11 @@ async function iniciar() {
   const conta = await contaAtual();
   if (!conta) return mostrarLogin('');
   const papel = await chamar(() => rpc('meu_papel'));
-  if (papel !== 'supervisor') return mostrarLogin(papel === 'posto' ? 'Esta é a conta de um celular do posto. Use a sua conta de supervisor.' : '');
-  $('quem').textContent = conta;
+  if (papel !== 'supervisor' && papel !== 'administrador') {
+    return mostrarLogin(papel === 'posto' ? 'Esta é a conta de um celular do posto. Use a sua conta de supervisor.' : '');
+  }
+  meuPapel = papel; minhaConta = conta;
+  $('quem').textContent = `${conta} · ${papel === 'administrador' ? 'Administrador' : 'Supervisor'}`;
   $('abas').hidden = false; $('sair').hidden = false;
   abrir(aba);
 }
@@ -292,6 +297,11 @@ pagina.addEventListener('click', async e => {
     const msg = pagina.querySelector(`[data-erro="${id}"]`).value.trim();
     if (msg.length < 3) { avisar('Escreva a mensagem de erro do KMM.', 'warn'); return; }
     if (await chamar(() => rpc('marcar_erro_kmm', { p_id: Number(id), p_mensagem: msg })) !== undefined) { avisar(`#${id} marcado com erro do KMM.`); lotes(); }
+  } else if (acao === 'excluir-acesso') {
+    if (!confirmarDuasVezes('Clique de novo para excluir')) return;
+    const r = await chamar(() => consulta(supabase.from('acessos').delete().eq('email', id).select()));
+    if (r && r.length) { avisar(`Acesso de ${id} excluído.`); acessos(); }
+    else if (r) avisar('Nada foi excluído.', 'warn');
   } else if (acao === 'alternar') {
     const { tabela, chave, valor, campo } = b.dataset;
     const r = await chamar(() => consulta(supabase.from(tabela).update({ [campo]: valor === 'true' }).eq(chave, b.dataset.id).select()));
@@ -401,23 +411,35 @@ pagina.addEventListener('change', async e => {
 });
 
 // ---------- Acessos (contas Google) ----------
+const NOME_PAPEL = { posto: 'Celular do posto', supervisor: 'Supervisor', administrador: 'Administrador' };
+
 async function acessos() {
   const lista = await chamar(() => consulta(supabase.from('acessos').select('*').order('papel').order('nome')));
   if (!lista) return;
+  const souAdmin = meuPapel === 'administrador';
+  const adminsAtivos = lista.filter(a => a.papel === 'administrador' && a.ativo).length;
+  const acoes = a => {
+    if (a.papel === 'administrador' && !souAdmin) return '<span class="hint">Protegido</span>';
+    if (a.papel === 'administrador' && a.ativo && adminsAtivos === 1) return '<span class="hint">Único administrador</span>';
+    return `<div class="acoes">${botaoAtivo('acessos', 'email', a.email, 'ativo', a.ativo)}
+      <button class="btn small warn" type="button" data-acao="excluir-acesso" data-id="${esc(a.email)}">Excluir</button></div>`;
+  };
   pagina.innerHTML = `
     <div class="bloco"><h2>Liberar uma conta Google</h2>
       <p>Só as contas desta lista conseguem usar o sistema. Qualquer outra conta Google que tentar entrar não vê nada.</p>
       <form class="grade" data-form="acessos">
         <div class="field"><label class="lbl">E-mail da conta Google</label><input name="email" type="email" required></div>
         <div class="field"><label class="lbl">Nome</label><input name="nome" required maxlength="120" placeholder="Ex.: Celular posto 1"></div>
-        <div class="field"><label class="lbl">Tipo</label><select name="papel"><option value="posto">Celular do posto</option><option value="supervisor">Supervisor (painel)</option></select></div>
+        <div class="field"><label class="lbl">Tipo</label><select name="papel"><option value="posto">Celular do posto</option><option value="supervisor">Supervisor (painel)</option>
+          ${souAdmin ? '<option value="administrador">Administrador (painel, protegido)</option>' : ''}</select></div>
         <div class="field"><label class="lbl">Ativo</label><select name="ativo"><option value="true">Sim</option><option value="false">Não</option></select></div>
-        <button class="btn small" type="submit">Salvar</button></form></div>
+        <button class="btn small" type="submit">Salvar</button></form>
+      <p class="hint">Administrador: pode tudo que o supervisor pode, e só outro administrador consegue alterar, desativar ou excluir a conta dele. O sistema nunca fica sem pelo menos um administrador ativo.</p></div>
     <div class="bloco"><h2>Contas liberadas</h2><div class="tabela"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Tipo</th><th>Situação</th><th></th></tr></thead><tbody>
-      ${lista.map(a => `<tr><td>${esc(a.nome)}</td><td>${esc(a.email)}</td><td>${a.papel === 'posto' ? 'Celular do posto' : 'Supervisor'}</td>
-        <td>${a.ativo ? 'Ativo' : 'Bloqueado'}</td><td>${botaoAtivo('acessos', 'email', a.email, 'ativo', a.ativo)}</td></tr>`).join('')}
+      ${lista.map(a => `<tr><td>${esc(a.nome)}${a.email === minhaConta ? ' <span class="hint">(você)</span>' : ''}</td><td>${esc(a.email)}</td><td>${NOME_PAPEL[a.papel] || esc(a.papel)}</td>
+        <td>${a.ativo ? 'Ativo' : 'Bloqueado'}</td><td>${acoes(a)}</td></tr>`).join('')}
     </tbody></table></div>
-    <p class="hint">Celular perdido ou roubado: bloqueie a conta dele aqui. Ele perde o acesso na próxima vez que tentar enviar, mesmo logado.</p></div>`;
+    <p class="hint">Celular perdido ou roubado: bloqueie ou exclua a conta dele aqui. Ele perde o acesso na próxima vez que tentar enviar, mesmo logado.</p></div>`;
 }
 
 // ---------- Auditoria ----------
