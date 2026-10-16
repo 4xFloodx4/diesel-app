@@ -205,7 +205,7 @@ test('chegada e fechamento guardam fotos; caminho de foto fora do padrão é rec
   // saídas pela bomba 1: 640 + 100 + 114 (o recusado foi cancelado e não conta); entrada: 1000
   assert.equal(Number(t.saldo_calculado), 12000 + 1000 - 854);
   await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 1 }, p_fotos: [] }), /já foi fechado/);
-  await assert.rejects(db.exec('delete from fotos'), /não pode ser alterada/);
+  await assert.rejects(db.exec('update fotos set chave = chave'), /não pode ser alterada/);
 });
 
 // ---------- Lote do KMM ----------
@@ -264,4 +264,26 @@ test('supervisor anexa foto a um veículo pelo painel; celular não pode', async
   await rpc(CHEFE, 'anexar_foto_veiculo', { p_placa: 'abc-1d23', p_foto: f });
   assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'veiculo', p_chave: 'ABC1D23' }))[0].caminho, f);
   await assert.rejects(rpc(POSTO, 'anexar_foto_veiculo', { p_placa: 'ABC1D23', p_foto: foto('veiculo') }), /Acesso negado/);
+});
+
+test('bloqueio do PIN dura 5 minutos', async () => {
+  await rpc(CHEFE, 'definir_pin', { p_frentista_id: carlos, p_pin: '7391' });
+  for (let i = 0; i < 4; i++) await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '0000' });
+  const r = await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '0000' });
+  assert.match(r.erro, /Bloqueado por 5 minutos/);
+  const minutos = (await db.query('select extract(epoch from bloqueado_ate - now()) / 60 as m from frentistas_pin where frentista_id = $1', [carlos])).rows[0].m;
+  assert.ok(minutos > 4.9 && minutos <= 5, `bloqueio de ${minutos} min`);
+});
+
+test('supervisor e administrador excluem foto, com auditoria; celular não', async () => {
+  const [f1, f2] = [foto('veiculo'), foto('veiculo')];
+  await rpc(CHEFE, 'anexar_foto_veiculo', { p_placa: 'DEF4567', p_foto: f1 });
+  await rpc(CHEFE, 'anexar_foto_veiculo', { p_placa: 'DEF4567', p_foto: f2 });
+  await assert.rejects(rpc(POSTO, 'excluir_foto', { p_caminho: f1 }), /Acesso negado/);
+  await rpc(CHEFE, 'excluir_foto', { p_caminho: f1 });
+  await rpc(DONO, 'excluir_foto', { p_caminho: f2 });
+  assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'veiculo', p_chave: 'DEF4567' })).length, 0);
+  const a = (await db.query("select conta, detalhes from auditoria where acao = 'foto.excluida' and entidade_id = 'DEF4567' order by id")).rows;
+  assert.deepEqual(a.map(x => x.conta), [CHEFE, DONO]);
+  await assert.rejects(rpc(CHEFE, 'excluir_foto', { p_caminho: f1 }), /não encontrada/);
 });

@@ -13,7 +13,7 @@
 -- Segurança:
 --  * Toda tabela tem RLS. Só contas Google cadastradas em "acessos" enxergam alguma coisa.
 --  * O celular não grava direto em tabela nenhuma: só pelas funções do app, que conferem tudo aqui dentro.
---  * Abastecimento nunca é apagado; auditoria não pode ser alterada nem apagada; fotos não podem ser trocadas.
+--  * Abastecimento nunca é apagado; auditoria não pode ser alterada nem apagada; fotos só o supervisor exclui.
 -- =====================================================================================
 
 -- ---------- Acesso ----------
@@ -354,8 +354,8 @@ drop trigger if exists abastecimento_sem_delete on abastecimentos;
 create trigger abastecimento_sem_delete before delete on abastecimentos
   for each row execute function bloquear_alteracao('Abastecimento não pode ser apagado; use o status Cancelado.');
 drop trigger if exists fotos_imutaveis on fotos;
-create trigger fotos_imutaveis before update or delete on fotos
-  for each row execute function bloquear_alteracao('Foto registrada não pode ser alterada.');
+create trigger fotos_imutaveis before update on fotos
+  for each row execute function bloquear_alteracao('Foto registrada não pode ser alterada; exclua e envie outra.');
 
 -- ---------- Login do frentista (nome + PIN no celular do posto) ----------
 create or replace function hash_pin(p_pin text, p_sal text) returns text
@@ -397,10 +397,10 @@ begin
   if hash_pin(coalesce(p_pin, ''), v_pin.sal) <> v_pin.hash then
     v_falhas := v_pin.falhas + 1;
     update frentistas_pin set falhas = case when v_falhas >= 5 then 0 else v_falhas end,
-           bloqueado_ate = case when v_falhas >= 5 then now() + interval '15 minutes' end
+           bloqueado_ate = case when v_falhas >= 5 then now() + interval '5 minutes' end
      where frentista_id = p_frentista_id;
     perform auditar('frentista.pin_errado', 'frentistas', p_frentista_id::text, jsonb_build_object('tentativa', v_falhas));
-    return jsonb_build_object('ok', false, 'erro', case when v_falhas >= 5 then 'PIN errado 5 vezes. Bloqueado por 15 minutos.'
+    return jsonb_build_object('ok', false, 'erro', case when v_falhas >= 5 then 'PIN errado 5 vezes. Bloqueado por 5 minutos.'
                                                         else format('PIN errado. Restam %s tentativa(s).', 5 - v_falhas) end);
   end if;
   update frentistas_pin set falhas = 0, bloqueado_ate = null where frentista_id = p_frentista_id;
@@ -872,6 +872,17 @@ begin
   perform auditar('veiculo.foto_anexada', 'veiculos', normaliza_placa(p_placa), null);
 end $$;
 
+-- Excluir foto: só supervisor e administrador. O painel apaga o arquivo no Storage e depois chama esta função.
+create or replace function excluir_foto(p_caminho text) returns void
+language plpgsql security definer set search_path = public as $$
+declare v fotos;
+begin
+  perform exigir(array['supervisor']);
+  delete from fotos where caminho = p_caminho returning * into v;
+  if v.id is null then raise exception 'Foto não encontrada.' using errcode = 'P0002'; end if;
+  perform auditar('foto.excluida', v.entidade, v.chave, jsonb_build_object('caminho', p_caminho, 'enviada_em', v.criado_em, 'enviada_por', v.conta));
+end $$;
+
 -- ---------- RLS: ninguém vê nada sem estar em "acessos" ----------
 do $$
 declare t text;
@@ -910,11 +921,14 @@ begin
     on conflict (id) do update set public = false, file_size_limit = 5242880, allowed_mime_types = array['image/jpeg'];
     execute 'drop policy if exists fotos_enviar on storage.objects';
     execute 'drop policy if exists fotos_ver on storage.objects';
-    -- Enviar: qualquer conta liberada, só no formato pasta/uuid.jpg. Sem política de alterar ou apagar: foto é prova.
+    execute 'drop policy if exists fotos_apagar on storage.objects';
+    -- Enviar: qualquer conta liberada, só no formato pasta/uuid.jpg. Apagar: só supervisor e administrador. Alterar: ninguém.
     execute $p$create policy fotos_enviar on storage.objects for insert to authenticated with check (
       bucket_id = 'fotos' and public.meu_papel() is not null
       and (public.foto_valida(name, 'fechamento') or public.foto_valida(name, 'chegada') or public.foto_valida(name, 'veiculo')))$p$;
     execute $p$create policy fotos_ver on storage.objects for select to authenticated using (
+      bucket_id = 'fotos' and public.sou_gestor())$p$;
+    execute $p$create policy fotos_apagar on storage.objects for delete to authenticated using (
       bucket_id = 'fotos' and public.sou_gestor())$p$;
   end if;
 end $$;
@@ -934,7 +948,7 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frent
   cadastrar_veiculo_app(text, text, numeric, integer, text), cadastrar_motorista_app(text, text, text),
   definir_pin(bigint, text), decidir_autorizacao(bigint, boolean, text),
   decidir_abastecimento(bigint, text, text, jsonb), marcar_erro_kmm(bigint, text),
-  gerar_lote(), linhas_lote(bigint), fechar_lote(bigint, text), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text)
+  gerar_lote(), linhas_lote(bigint), fechar_lote(bigint, text), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)
   to authenticated;
 -- As políticas RLS, as do Storage e os gatilhos chamam estas; precisam estar liberadas para quem está logado
 grant execute on function exigir(text[]), sou_gestor(), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text),

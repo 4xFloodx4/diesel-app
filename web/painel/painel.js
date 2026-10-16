@@ -95,15 +95,29 @@ async function verFotos(entidade, chave, titulo) {
   const links = await chamar(() => linksDasFotos(lista.map(f => f.caminho)));
   if (!links) return;
   const m = $('modal');
+  m.dataset.entidade = entidade; m.dataset.chave = chave; m.dataset.titulo = titulo;
   m.innerHTML = `<div class="caixa" role="dialog" aria-label="${esc(titulo)}"><div class="acoes"><h2>${esc(titulo)}</h2>
       <button class="btn small ghost" type="button" data-acao="fechar-modal">Fechar</button></div>
-    ${links.length ? `<div class="galeria">${links.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Foto"></a>`).join('')}</div>`
+    ${links.length ? `<div class="galeria">${links.map((u, i) => `<figure class="foto-item"><a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Foto ${i + 1}"></a>
+        <button class="btn small warn" type="button" data-acao="excluir-foto" data-caminho="${esc(lista[i].caminho)}">Excluir foto</button></figure>`).join('')}</div>`
       : '<p class="hint">Sem fotos.</p>'}
-    <p class="hint">Toque numa foto para abrir em tamanho real. Os links valem por 10 minutos.</p></div>`;
+    <p class="hint">Toque numa foto para abrir em tamanho real. Os links valem por 10 minutos. Excluir uma foto fica registrado na auditoria.</p></div>`;
   m.hidden = false;
 }
-$('modal').addEventListener('click', e => {
-  if (e.target.id === 'modal' || e.target.closest('[data-acao="fechar-modal"]')) { $('modal').hidden = true; $('modal').innerHTML = ''; }
+$('modal').addEventListener('click', async e => {
+  const m = $('modal');
+  if (e.target.id === 'modal' || e.target.closest('[data-acao="fechar-modal"]')) { m.hidden = true; m.innerHTML = ''; abrir(aba); return; }
+  const b = e.target.closest('[data-acao="excluir-foto"]');
+  if (!b) return;
+  if (b.dataset.confirmando !== '1') { b.dataset.confirmando = '1'; b.textContent = 'Clique de novo para excluir'; return; }
+  b.disabled = true;
+  const ok = await chamar(async () => {
+    const { error } = await supabase.storage.from('fotos').remove([b.dataset.caminho]);
+    if (error) throw new Error(`Não foi possível excluir o arquivo: ${error.message}`);
+    await rpc('excluir_foto', { p_caminho: b.dataset.caminho });
+    return true;
+  });
+  if (ok) { avisar('Foto excluída.'); verFotos(m.dataset.entidade, m.dataset.chave, m.dataset.titulo); } else b.disabled = false;
 });
 const botaoFotos = (entidade, chave, titulo, n) => n
   ? `<button class="btn small ghost" type="button" data-acao="ver-fotos" data-entidade="${entidade}" data-chave="${esc(chave)}" data-titulo="${esc(titulo)}">Fotos (${n})</button>` : '';

@@ -46,3 +46,5 @@ tr.divergente td { background: var(--warn-soft); }
 .inline input { min-height: 38px; padding: 6px 10px; width: 160px; }
 .autorizacao { border-left: 4px solid var(--accent); }
 .justificativa { background: var(--accent-soft); border-radius: 8px; padding: 8px 10px; }
+
+.foto-item { margin: 0; display: flex; flex-direction: column; gap: 6px; }
