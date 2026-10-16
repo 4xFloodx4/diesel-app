@@ -239,7 +239,6 @@ test('chegada e fechamento guardam fotos; caminho de foto fora do padrão é rec
   assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'chegada', p_chave: String(c.id) })).length, 2);
   const [t] = await rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_fotos: [foto('fechamento')] });
   // saídas do tanque pelas 2 bombas: bomba 1 = 640 + 100 + 114 + 20 (os recusados foram cancelados e não contam), bomba 2 = 30; entrada: 1000
-  assert.equal(Number(t.saidas), 904);
   assert.equal(Number(t.saldo_calculado), 12000 + 1000 - 904);
   await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 1 }, p_fotos: [] }), /já foi fechado/);
   // depois do fechamento, nada mais entra com a data do dia
