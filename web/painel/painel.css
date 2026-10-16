@@ -1,0 +1,35 @@
+.topo { background: var(--surface); border-bottom: 1px solid var(--line); padding: 10px 20px; display: flex; flex-wrap: wrap;
+  align-items: center; gap: 10px 24px; position: sticky; top: 0; z-index: 2; }
+.marca b { font-family: var(--font-display); font-size: 20px; display: block; }
+.marca span { font-size: 12.5px; color: var(--muted); }
+.abas { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
+.abas button { border: 0; background: none; padding: 8px 12px; border-radius: 8px; font-weight: 600; color: var(--muted); cursor: pointer; }
+.abas button[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); }
+.abas .contador { background: var(--warn); color: #fff; border-radius: 999px; padding: 0 7px; font-size: 12px; margin-left: 4px; }
+.aviso { max-width: 1200px; margin: 12px auto 0; padding-inline: 20px; }
+.pagina { max-width: 1200px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; gap: 18px; }
+.pagina h2 { font-size: 22px; }
+.cartoes { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.cartao { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.cartao b { display: block; font: 700 28px/1.1 var(--font-display); font-variant-numeric: tabular-nums; }
+.cartao span { font-size: 13px; color: var(--muted); }
+.cartao.alerta { border-color: var(--warn); }
+.cartao.alerta b { color: var(--warn); }
+.bloco { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.filtros { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.filtros .field { width: auto; min-width: 140px; }
+.tabela { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th { text-align: left; font-family: var(--font-display); font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  border-bottom: 2px solid var(--line); padding: 6px 8px; white-space: nowrap; }
+td { border-bottom: 1px solid var(--line); padding: 7px 8px; vertical-align: top; }
+td.n { text-align: right; font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr.divergente td { background: var(--warn-soft); }
+.excecao { border-left: 4px solid var(--warn); }
+.problemas { margin: 0; padding-left: 18px; color: var(--warn); font-size: 13.5px; }
+.grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.acoes { display: flex; flex-wrap: wrap; gap: 8px; }
+.codigo { font: 700 40px var(--font-num); letter-spacing: .08em; color: var(--accent); }
+.centro { max-width: 380px; margin: 40px auto; display: flex; flex-direction: column; gap: 14px; }
+.detalhe { font-size: 12.5px; color: var(--muted); word-break: break-word; }
+.duas { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }

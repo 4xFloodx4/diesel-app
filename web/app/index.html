@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#b06e00">
+  <meta http-equiv="Content-Security-Policy" content="__CSP__">
+  <title>Abastecimento</title>
+  <link rel="icon" href="__RAIZ__comum/icone.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="__RAIZ__comum/base.css">
+  <link rel="stylesheet" href="__RAIZ__app/app.css">
+  <script type="module" src="__RAIZ__app/app.js"></script>
+</head>
+<body>
+  <div class="tela">
+    <header class="topo">
+      <div><b>Abastecimento</b><span id="subtitulo"></span></div>
+      <button class="link" id="sair" type="button" hidden>Sair</button>
+    </header>
+    <div class="sync" id="sync" hidden></div>
+    <main class="conteudo" id="conteudo"><p class="hint">Carregando…</p></main>
+    <nav class="abas" id="abas" hidden>
+      <button type="button" data-aba="abastecer">Abastecer</button>
+      <button type="button" data-aba="turno">Turno</button>
+      <button type="button" data-aba="chegada">Chegada</button>
+      <button type="button" data-aba="fechar">Fechar</button>
+    </nav>
+  </div>
+</body>
+</html>

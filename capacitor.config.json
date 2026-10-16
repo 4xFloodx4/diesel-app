@@ -1,0 +1,9 @@
+{
+  "appId": "br.com.ritmolog.diesel",
+  "appName": "Abastecimento Diesel",
+  "webDir": "dist-android",
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false
+  }
+}
