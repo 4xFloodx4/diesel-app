@@ -1,0 +1,68 @@
+# Gera o APK assinado do app do frentista.
+#  - Manual: aba Actions > "Gerar APK" > Run workflow (o APK fica em "Artifacts" da execução)
+#  - Versão: crie uma tag (ex.: v1.0.0) e o APK é publicado em Releases
+name: Gerar APK
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Testes
+        run: npm test
+      - name: Projeto Android
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          APP_ESQUEMA: ${{ vars.APP_ESQUEMA }}
+          VERSAO_CODIGO: ${{ github.run_number }}
+          VERSAO_NOME: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.{0}', github.run_number) }}
+        run: |
+          npm run build
+          npx cap add android
+          npx cap sync android
+          node scripts/preparar-android.mjs
+      - name: Compilar
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+      - name: Assinar
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_SENHA: ${{ secrets.KEYSTORE_SENHA }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_SENHA" ]; then
+            echo "::error::Configure os segredos KEYSTORE_BASE64 e KEYSTORE_SENHA (veja docs/CONFIGURAR.md)."; exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/chave.jks"
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          "$BT/zipalign" -p -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/alinhado.apk"
+          "$BT/apksigner" sign --ks "$RUNNER_TEMP/chave.jks" --ks-pass env:KEYSTORE_SENHA --key-pass env:KEYSTORE_SENHA \
+            --out abastecimento-diesel.apk "$RUNNER_TEMP/alinhado.apk"
+          "$BT/apksigner" verify --print-certs abastecimento-diesel.apk
+          rm -f "$RUNNER_TEMP/chave.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abastecimento-diesel-apk
+          path: abastecimento-diesel.apk
+      - name: Publicar em Releases
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: abastecimento-diesel.apk
