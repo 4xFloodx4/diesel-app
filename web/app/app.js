@@ -29,7 +29,8 @@ let novoVeiculo = null, novoMotorista = null;
 let escolhido = null, pin = '';          // tela de login do frentista
 let guia = 'frentista';
 
-const novoForm = () => ({ bomba: estado?.bombas?.[0]?.numero ?? 1, placa: '', motorista: '', hora: horaAgora(), km: '', litros: '', enc: '',
+// A bomba não vem marcada: o frentista escolhe a cada lançamento (só vem marcada se o posto tiver uma bomba só)
+const novoForm = () => ({ bomba: estado?.bombas?.length === 1 ? estado.bombas[0].numero : null, placa: '', motorista: '', hora: horaAgora(), km: '', litros: '', enc: '',
   obs: '', desconto: null, justificativa: '', justHorario: '' });
 
 // Turno (horário definido pelo administrador). Aceita turno que vira a meia-noite.
@@ -55,6 +56,7 @@ function conferir(f) {
   const km = parseNum(f.km), lt = parseNum(f.litros), enc = parseNum(f.enc);
   const v = estado.veiculos.find(x => x.placa === f.placa);
   const bloqueios = [];
+  if (f.bomba == null) bloqueios.push('Escolha a bomba.');
   if (!f.placa) bloqueios.push('Escolha a placa.');
   if (!f.motorista) bloqueios.push('Escolha o motorista.');
   if (!/^\d{2}:\d{2}$/.test(f.hora)) bloqueios.push('Informe a hora.');
@@ -74,10 +76,15 @@ function conferir(f) {
   else if (lt > v.capacidade_l * LIM.tolCap) regras.push({ e: false, t: `${nf(lt)} L passa da capacidade do tanque deste veículo (${nf(v.capacidade_l, 0)} L).` });
   else regras.push({ e: true, t: `Cabe no tanque do veículo (${nf(v.capacidade_l, 0)} L).` });
   const ea = encAnterior(f.bomba);
-  if (!(enc > 0) || !(lt > 0)) regras.push({ e: null, t: 'Encerrante bate com os litros.' });
+  const bate = anterior => Math.abs(enc - anterior - lt) <= LIM.tolEnc;
+  if (f.bomba == null || !(enc > 0) || !(lt > 0)) regras.push({ e: null, t: 'Encerrante bate com os litros.' });
   else if (enc <= ea) regras.push({ e: false, t: `Encerrante ${nf(enc)} não é maior que o anterior da bomba ${f.bomba} (${nf(ea)}).` });
-  else if (Math.abs(enc - ea - lt) > LIM.tolEnc) regras.push({ e: false, t: `Pelo encerrante saíram ${nf(enc - ea)} L, mas o visor diz ${nf(lt)} L.` });
+  else if (!bate(ea)) regras.push({ e: false, t: `Pelo encerrante saíram ${nf(enc - ea)} L, mas o visor diz ${nf(lt)} L.` });
   else regras.push({ e: true, t: `Encerrante bate com os litros (${nf(enc - ea)} L).` });
+  // Encerrante que não bate com a bomba escolhida, mas bate com outra: bomba trocada
+  const outra = f.bomba != null && enc > 0 && lt > 0 && !bate(ea)
+    ? estado.bombas.find(b => b.numero !== f.bomba && bate(Number(b.encerrante_anterior ?? 0))) : null;
+  if (outra) regras.push({ e: false, t: `Esse encerrante bate com a bomba ${outra.numero}. Confira se escolheu a bomba certa.`, bomba: outra.numero });
   return { bloqueios, regras, falhas: regras.filter(r => r.e === false) };
 }
 const encAnterior = bomba => Number(estado.bombas.find(x => x.numero === bomba)?.encerrante_anterior ?? 0);
@@ -168,10 +175,12 @@ function telaAbastecer() {
   const fora = foraDoTurno(form.hora);
   const pode = !c.bloqueios.length && (!falha || form.obs.trim().length >= 5);
   const v = estado.veiculos.find(x => x.placa === form.placa);
+  const variosTanques = new Set(estado.bombas.map(b => b.tanque)).size > 1;
   return `
     ${avisoHtml()}${avisoFechamento()}
-    <div class="field"><span class="lbl">Bomba</span><div class="bombas">
-      ${estado.bombas.map(b => `<button type="button" data-bomba="${b.numero}" aria-pressed="${b.numero === form.bomba}"><b>${b.numero}</b><small>${esc(b.tanque)}</small></button>`).join('')}
+    <div class="field"><span class="lbl">Em qual bomba foi o abastecimento?</span><div class="bombas">
+      ${estado.bombas.map(b => `<button type="button" data-bomba="${b.numero}" aria-pressed="${b.numero === form.bomba}"><b>${b.numero}</b>
+        <small>${variosTanques ? `${esc(b.tanque)} · ` : ''}enc. ${nf(b.encerrante_anterior)}</small></button>`).join('')}
     </div></div>
     <div class="row2">
       <div class="field"><label class="lbl" for="f-placa">Placa</label>
@@ -191,9 +200,11 @@ function telaAbastecer() {
       <div class="field"><label class="lbl" for="f-litros">Litros (visor)</label><input id="f-litros" class="num" inputmode="decimal" value="${esc(form.litros)}"></div>
       <div class="field"><label class="lbl" for="f-enc">Encerrante final</label><input id="f-enc" class="num" inputmode="decimal" value="${esc(form.enc)}"></div>
     </div>
-    <div class="medidor"><span>Encerrante anterior (bomba ${form.bomba})</span><span class="v">${nf(ea)}</span>
-      <span>Saída pelo encerrante</span><span class="v grande">${enc > ea ? nf(enc - ea) + ' L' : '–'}</span></div>
-    <ul class="checks">${c.regras.map(r => `<li class="${r.e === true ? 'ok' : r.e === false ? 'falha' : ''}">${esc(r.t)}</li>`).join('')}</ul>
+    ${form.bomba == null ? '<div class="medidor"><span>Encerrante anterior</span><span class="v">escolha a bomba</span></div>'
+      : `<div class="medidor"><span>Encerrante anterior (bomba ${form.bomba})</span><span class="v">${nf(ea)}</span>
+      <span>Saída pelo encerrante</span><span class="v grande">${enc > ea ? nf(enc - ea) + ' L' : '–'}</span></div>`}
+    <ul class="checks">${c.regras.map(r => `<li class="${r.e === true ? 'ok' : r.e === false ? 'falha' : ''}">${esc(r.t)}${r.bomba
+      ? ` <button class="link" type="button" data-bomba="${r.bomba}">Usar a bomba ${r.bomba}</button>` : ''}</li>`).join('')}</ul>
     ${falha ? `<div class="field"><label class="lbl" for="f-obs">O que aconteceu? (vai para o supervisor)</label>
       <textarea id="f-obs" rows="2" maxlength="500">${esc(form.obs)}</textarea></div>` : ''}
     <div class="field desconto"><span class="lbl">O diesel foi descontado do motorista?</span>
@@ -450,9 +461,8 @@ async function enviarAbastecimento() {
   aviso = r.status === 'Aguardando autorização' ? { tipo: 'warn', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: aguardando autorização do supervisor.` }
     : r.status === 'Exceção' ? { tipo: 'warn', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: foi para o supervisor conferir.` }
     : { tipo: 'ok', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: lançado.` };
-  const b = form.bomba;
   await atualizarEstado();
-  form = novoForm(); form.bomba = b;
+  form = novoForm();   // próxima vez, o frentista escolhe a bomba de novo
 }
 
 async function enviarChegada() {

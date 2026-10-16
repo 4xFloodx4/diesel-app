@@ -477,6 +477,7 @@ declare
   v_bomba bombas;
   v_km_ant integer;
   v_enc_ant numeric;
+  v_outra integer;
   v_agora timestamp := agora_local();
   p text[] := '{}';
 begin
@@ -521,6 +522,18 @@ begin
     elsif abs(p_encerrante - v_enc_ant - p_litros) > 1 then
       p := p || format('Encerrante indica %s L (de %s para %s), mas foram informados %s L.',
                        fmt(p_encerrante - v_enc_ant), fmt(v_enc_ant), fmt(p_encerrante), fmt(p_litros));
+    end if;
+    -- Posto com mais de uma bomba: se o encerrante bate com outra bomba, o frentista provavelmente escolheu a errada
+    if p_encerrante <= v_enc_ant or abs(p_encerrante - v_enc_ant - p_litros) > 1 then
+      select o.numero into v_outra from bombas o
+       where o.ativa and o.numero <> p_bomba
+         and abs(p_encerrante - p_litros - greatest(o.encerrante_inicial,
+               (select max(a.encerrante) from abastecimentos a where a.bomba = o.numero and a.data_hora < p_data_hora
+                   and a.id is distinct from p_excluir and a.status <> 'Cancelado'))) <= 1
+       order by o.numero limit 1;
+      if v_outra is not null then
+        p := p || format('O encerrante bate com a bomba %s. Confira se a bomba escolhida está certa.', v_outra);
+      end if;
     end if;
   end if;
 
@@ -622,6 +635,13 @@ drop function if exists registrar_abastecimentos(jsonb);
 drop function if exists registrar_chegadas(jsonb);
 drop function if exists registrar_fechamento(jsonb, bigint);
 
+-- Trava até o fim da transação: quem lança na mesma bomba ou na mesma placa espera o anterior gravar.
+-- Trava "consultiva" (não prende linha de cadastro), então o painel continua editando bombas e veículos.
+create or replace function trava_lancamento(p_bomba integer, p_placa text) returns void
+language sql as $$
+  select pg_advisory_xact_lock(1, coalesce(p_bomba, 0)), pg_advisory_xact_lock(2, hashtext(normaliza_placa(p_placa)))
+$$;
+
 -- Data e hora de um lançamento novo: nem no futuro, nem antiga, nem num dia já fechado
 create or replace function validar_data_lancamento(p_dh timestamp) returns void
 language plpgsql stable security definer set search_path = public as $$
@@ -647,13 +667,16 @@ declare
 begin
   perform exigir(array['posto', 'supervisor']);
   v_frent := frentista_da_sessao(p_sessao);
+  v_bomba := (r ->> 'bomba')::integer;
+  -- Um lançamento por vez na mesma bomba e na mesma placa: senão dois envios simultâneos passam pela conferência
+  -- do encerrante e do KM com o mesmo "anterior". Ordem fixa (bomba, depois placa) para não travar em ciclo.
+  perform trava_lancamento(v_bomba, r ->> 'placa');
   select * into v_ex from abastecimentos where uuid = (r ->> 'uuid')::uuid;
   if v_ex.id is not null then   -- toque duplo ou reenvio: devolve o que já foi gravado
     return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'status', v_ex.status, 'problemas', v_ex.problemas);
   end if;
   v_dh := date_trunc('second', (r ->> 'data_hora')::timestamp);
   v_km := (r ->> 'km')::integer; v_lt := (r ->> 'litros')::numeric; v_enc := (r ->> 'encerrante')::numeric;
-  v_bomba := (r ->> 'bomba')::integer;
   v_desconto := coalesce((r ->> 'desconto')::boolean, false);
   v_just := nullif(trim(coalesce(r ->> 'justificativa_desconto', '')), '');
   if v_km is null or v_km <= 0 or v_km >= 10000000 or v_lt is null or v_lt <= 0 or v_lt >= 5000
@@ -680,7 +703,12 @@ begin
           (c ->> 'encerrante_anterior')::numeric, v_bomba, c ->> 'tanque', v_status, c -> 'problemas',
           left(nullif(trim(r ->> 'obs'), ''), 500), v_frent, meu_email(), v_desconto, left(v_just, 500),
           v_fora, case when v_fora then left(v_just_h, 500) end)
+  on conflict (uuid) do nothing
   returning id into v_id;
+  if v_id is null then   -- mesmo envio gravado ao mesmo tempo por outra conexão
+    select * into v_ex from abastecimentos where uuid = (r ->> 'uuid')::uuid;
+    return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'status', v_ex.status, 'problemas', v_ex.problemas);
+  end if;
   perform auditar('abastecimento.recebido', 'abastecimento', v_id::text,
                   jsonb_build_object('placa', c ->> 'placa', 'litros', v_lt, 'bomba', v_bomba, 'status', v_status, 'frentista_id', v_frent,
                                      'frentista', (select nome from frentistas where id = v_frent), 'desconto', v_desconto, 'fora_horario', v_fora));
@@ -709,7 +737,12 @@ begin
           nullif(normaliza_placa(r ->> 'placa_caminhao'), ''), nullif(normaliza_placa(r ->> 'placa_carreta'), ''),
           left(r ->> 'motorista', 120), nullif(regexp_replace(coalesce(r ->> 'cpf', ''), '\D', '', 'g'), ''),
           v_alerta, v_frent, meu_email())
+  on conflict (uuid) do nothing
   returning id into v_id;
+  if v_id is null then   -- mesmo envio gravado ao mesmo tempo por outra conexão
+    select * into v_ex from chegadas where uuid = (r ->> 'uuid')::uuid;
+    return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'alerta', v_ex.alerta);
+  end if;
   perform registrar_fotos('chegada', v_id::text, p_fotos, v_frent);
   perform auditar('chegada.recebida', 'chegada', v_id::text,
                   jsonb_build_object('nf', r ->> 'nf', 'litros', v_lt, 'tanque', upper(r ->> 'tanque'), 'fotos', coalesce(cardinality(p_fotos), 0),
@@ -796,6 +829,7 @@ begin
     raise exception 'Este lançamento não está aguardando autorização.' using errcode = '22023';
   end if;
   if p_aprovar then
+    perform trava_lancamento(v.bomba, v.placa);
     c := conferir_abastecimento(v.data_hora, v.placa, v.motorista, v.km, v.litros, v.encerrante, v.bomba, v.id);
     update abastecimentos set status = c ->> 'status', problemas = c -> 'problemas', cpf = c ->> 'cpf',
            encerrante_anterior = (c ->> 'encerrante_anterior')::numeric, tanque = c ->> 'tanque',
@@ -836,6 +870,16 @@ begin
     v_enc := coalesce((p_alteracoes ->> 'encerrante')::numeric, v_antes.encerrante);
     v_bomba := coalesce((p_alteracoes ->> 'bomba')::integer, v_antes.bomba);
     if v_km <= 0 or v_lt <= 0 or v_lt >= 5000 or v_enc <= 0 then raise exception 'Valores fora do permitido.' using errcode = '22023'; end if;
+    -- Mudar a data para outro dia: não pode ir para o futuro nem para um dia cujo turno já foi fechado
+    if v_dh::date <> v_antes.data_hora::date then
+      if v_dh > agora_local() + interval '10 minutes' then
+        raise exception 'A data % está no futuro.', to_char(v_dh, 'DD/MM HH24:MI') using errcode = '22023';
+      end if;
+      if exists (select 1 from fechamentos where data = v_dh::date) then
+        raise exception 'O turno de % já foi fechado. Não dá para mover o lançamento para esse dia.', to_char(v_dh, 'DD/MM') using errcode = '22023';
+      end if;
+    end if;
+    perform trava_lancamento(v_bomba, v_placa);
     c := conferir_abastecimento(v_dh, v_placa, v_mot, v_km, v_lt, v_enc, v_bomba, p_id);
     v_status := c ->> 'status';
     if p_acao = 'aprovar' then
@@ -885,15 +929,20 @@ language plpgsql security definer set search_path = public as $$
 declare v_id bigint; v_qtd integer; v_lt numeric; v_sem_cpf text;
 begin
   perform exigir(array['supervisor']);
-  perform 1 from abastecimentos where status = 'Pronto' for update;
-  select count(*), coalesce(sum(litros), 0) into v_qtd, v_lt from abastecimentos where status = 'Pronto';
+  -- Os totais saem das próprias linhas que entraram no lote (um lançamento que chegue no meio não fica de fora da conta).
+  -- Qualquer erro abaixo desfaz tudo, inclusive o lote criado.
+  insert into lotes (criado_por, quantidade, litros, situacao) values (meu_email(), 0, 0, 'Gerado') returning id into v_id;
+  with u as (
+    update abastecimentos set status = 'Em lote', lote_id = v_id, atualizado_em = now() where status = 'Pronto'
+    returning id, litros, cpf
+  )
+  select count(*), coalesce(sum(litros), 0), string_agg(id::text, ', ' order by id) filter (where cpf is null or length(cpf) <> 11)
+    into v_qtd, v_lt, v_sem_cpf from u;
   if v_qtd = 0 then raise exception 'Não há abastecimentos prontos para o KMM.' using errcode = '22023'; end if;
-  select string_agg(id::text, ', ') into v_sem_cpf from abastecimentos where status = 'Pronto' and (cpf is null or length(cpf) <> 11);
   if v_sem_cpf is not null then
     raise exception 'Registros sem CPF de motorista: %. Corrija o cadastro e revise.', v_sem_cpf using errcode = '22023';
   end if;
-  insert into lotes (criado_por, quantidade, litros, situacao) values (meu_email(), v_qtd, v_lt, 'Gerado') returning id into v_id;
-  update abastecimentos set status = 'Em lote', lote_id = v_id, atualizado_em = now() where status = 'Pronto';
+  update lotes set quantidade = v_qtd, litros = v_lt where id = v_id;
   perform auditar('lote.gerado', 'lote', v_id::text, jsonb_build_object('quantidade', v_qtd, 'litros', v_lt));
   return jsonb_build_object('id', v_id, 'quantidade', v_qtd, 'litros', v_lt, 'linhas', linhas_lote(v_id));
 end $$;

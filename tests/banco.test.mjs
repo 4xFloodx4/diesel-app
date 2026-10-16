@@ -56,7 +56,7 @@ before(async () => {
                                                     ('${DONO}', 'Dono', 'administrador');
     insert into frentistas (nome) values ('Ana Ribeiro'), ('Carlos Mendes');
     insert into tanques values ('TQ01', 30000, 12000);
-    insert into bombas values (1, 'TQ01', 7071046, true);
+    insert into bombas values (1, 'TQ01', 7071046, true), (2, 'TQ01', 512000, true);   -- 1 tanque, 2 bombas
     insert into veiculos (placa, capacidade_l, km_inicial) values ('ABC1D23', 700, 149500), ('DEF4567', 600, 97500);
     insert into motoristas (nome, cpf) values ('JOAO DA SILVA', '52998224725');
     update configuracoes set abertura = '00:00', fechamento = '23:59:59';`);
@@ -188,6 +188,21 @@ test('banco reconfere: encerrante não bate vira Exceção, com número formatad
   assert.ok(a.problemas.some(p => p.includes('Encerrante indica 114 L (de 7.071.786 para 7.071.900)')), a.problemas.join(' | '));
 });
 
+test('2 bombas no mesmo tanque: bomba trocada é apontada e o supervisor corrige', async () => {
+  // encerrante da bomba 1 (7.071.900 + 20 L), mas o frentista marcou a bomba 2
+  const errada = await abastecer(reg(4, { placa: 'DEF4567', km: 98100, litros: 20, encerrante: 7071920, bomba: 2 }));
+  assert.equal(errada.status, 'Exceção');
+  assert.ok(errada.problemas.some(p => p.includes('bate com a bomba 1')), errada.problemas.join(' | '));
+  const certa = await rpc(CHEFE, 'decidir_abastecimento', { p_id: errada.id, p_acao: 'revalidar', p_motivo: 'Frentista marcou a bomba errada',
+    p_alteracoes: { bomba: 1 } });
+  assert.equal(certa.status, 'Pronto', JSON.stringify(certa.problemas));
+  assert.equal(certa.tanque, 'TQ01');
+  const b2 = await abastecer(reg(3, { placa: 'DEF4567', km: 98200, litros: 30, encerrante: 512030, bomba: 2 }));
+  assert.equal(b2.status, 'Pronto', JSON.stringify(b2.problemas));
+  const e = await rpc(POSTO, 'estado_posto');
+  assert.deepEqual(e.bombas.map(b => [b.numero, b.tanque, Number(b.encerrante_anterior)]), [[1, 'TQ01', 7071920], [2, 'TQ01', 512030]]);
+});
+
 // ---------- Cadastros pelo frentista ----------
 test('frentista cadastra veículo novo com foto, mas não altera um existente', async () => {
   await assert.rejects(rpc(POSTO, 'cadastrar_veiculo_app', { p_sessao: sessao, p_placa: 'GHI8J90', p_capacidade: 500, p_km: 220000, p_foto: null }), /foto/);
@@ -223,8 +238,9 @@ test('chegada e fechamento guardam fotos; caminho de foto fora do padrão é rec
     litros: 1000, regua_antes: 11000, regua_depois: 12000 }, p_fotos: fotos });
   assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'chegada', p_chave: String(c.id) })).length, 2);
   const [t] = await rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_fotos: [foto('fechamento')] });
-  // saídas pela bomba 1: 640 + 100 + 114 (o recusado foi cancelado e não conta); entrada: 1000
-  assert.equal(Number(t.saldo_calculado), 12000 + 1000 - 854);
+  // saídas do tanque pelas 2 bombas: bomba 1 = 640 + 100 + 114 + 20 (os recusados foram cancelados e não contam), bomba 2 = 30; entrada: 1000
+  assert.equal(Number(t.saidas), 904);
+  assert.equal(Number(t.saldo_calculado), 12000 + 1000 - 904);
   await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 1 }, p_fotos: [] }), /já foi fechado/);
   // depois do fechamento, nada mais entra com a data do dia
   await assert.rejects(abastecer(reg(1, { km: 150900, litros: 10, encerrante: 7071910 })), /já foi fechado/);
@@ -232,14 +248,26 @@ test('chegada e fechamento guardam fotos; caminho de foto fora do padrão é rec
   await assert.rejects(db.exec('update fotos set chave = chave'), /não pode ser alterada/);
 });
 
+test('supervisor não move lançamento para um dia já fechado', async () => {
+  const ontem = await abastecer(reg(60 * 24, { placa: 'GHI8J90', km: 220100, litros: 10, encerrante: 512050, bomba: 2 }));
+  assert.equal(ontem.status, 'Exceção');   // encerrante não bate: fica fora do lote
+  await assert.rejects(rpc(CHEFE, 'decidir_abastecimento', { p_id: ontem.id, p_acao: 'revalidar', p_motivo: 'Data errada no celular',
+    p_alteracoes: { data_hora: dh(30) } }), /já foi fechado/);
+});
+
 // ---------- Lote do KMM ----------
 test('lote do KMM: só entra o Pronto, não repete, marca erro e trava alteração', async () => {
   const lote = await rpc(CHEFE, 'gerar_lote');
-  assert.equal(lote.quantidade, 2);
+  assert.equal(lote.quantidade, 4);
+  assert.equal(Number(lote.litros), 640 + 100 + 20 + 30);
+  assert.equal(lote.linhas.length, lote.quantidade);
+  assert.deepEqual((await db.query('select quantidade, litros::float as litros from lotes where id = $1', [lote.id])).rows[0], { quantidade: 4, litros: 790 });
   assert.equal(lote.linhas[0].cpf, '52998224725');
+  const lotesAntes = (await db.query('select count(*)::int as n from lotes')).rows[0].n;
   await assert.rejects(rpc(CHEFE, 'gerar_lote'), /Não há abastecimentos prontos/);
+  assert.equal((await db.query('select count(*)::int as n from lotes')).rows[0].n, lotesAntes);   // lote vazio não fica gravado
   await rpc(CHEFE, 'marcar_erro_kmm', { p_id: lote.linhas[0].requisicao, p_mensagem: 'Placa bloqueada no KMM' });
-  assert.equal((await rpc(CHEFE, 'fechar_lote', { p_lote: lote.id, p_acao: 'confirmar' })).registros, 1);
+  assert.equal((await rpc(CHEFE, 'fechar_lote', { p_lote: lote.id, p_acao: 'confirmar' })).registros, 3);
   await assert.rejects(rpc(CHEFE, 'decidir_abastecimento', { p_id: lote.linhas[1].requisicao, p_acao: 'cancelar', p_motivo: 'teste de trava' }), /não pode ser alterado/);
 });
 

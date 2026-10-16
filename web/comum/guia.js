@@ -17,11 +17,11 @@ export const GUIA = {
       <div class="atencao"><b>Nunca passe seu PIN.</b> Tudo o que for lançado com ele fica no seu nome. Errou 5 vezes, o app bloqueia por 5 minutos; se esqueceu, peça um PIN novo ao supervisor.</div>`],
     ['bomba', 'Abastecer um caminhão', 'O procedimento de todo abastecimento', `<ol><li>Antes de abastecer, confira a placa e quem é o motorista.</li>
       <li>Abasteça. Anote ou memorize os <b>litros do visor</b> e o <b>encerrante</b> que a bomba mostra no final.</li>
-      <li>No app: toque na bomba usada, escolha a placa e confira o motorista sugerido.</li>
+      <li>No app: toque na <b>bomba em que abasteceu</b> (ela não vem marcada; cada bomba tem o próprio encerrante), escolha a placa e confira o motorista sugerido.</li>
       <li>Digite o <b>KM do painel</b> do caminhão, os litros e o encerrante final.</li>
       <li>Confira as bolinhas: verde é tudo certo. Vermelho quer dizer que algum número não bate.</li>
       <li>Responda se o diesel foi <b>descontado do motorista</b>.</li><li>Toque em <b>Enviar abastecimento</b> e espere a mensagem de lançado.</li></ol>
-      <div class="dica">Ficou vermelho? Confira os números de novo antes de enviar. Se estiverem certos mesmo, escreva o que aconteceu: o lançamento vai para o supervisor conferir.</div>`],
+      <div class="dica">Ficou vermelho? Confira os números de novo antes de enviar. Se o app disser que o encerrante bate com a outra bomba, você marcou a bomba errada: toque em <b>Usar a bomba</b>. Se estiverem certos mesmo, escreva o que aconteceu: o lançamento vai para o supervisor conferir.</div>`],
     ['alerta', 'Diesel sem desconto do motorista', 'Precisa de autorização', `<ol><li>Marque <b>Não</b> em "O diesel foi descontado do motorista?".</li>
       <li>Explique por que não foi descontado (ex.: motorista agregado com acerto no fim do mês).</li><li>Toque em <b>Pedir autorização ao supervisor</b>.</li></ol>
       <div class="dica">O abastecimento fica parado em "Aguardando autorização" até o supervisor decidir. Você acompanha em <b>Turno</b>.</div>`],

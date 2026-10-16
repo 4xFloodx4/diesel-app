@@ -96,7 +96,7 @@ Para atualizar o app depois, crie uma nova release com tag maior (`v1.0.1`, `v1.
 2. **Acessos**: libere o e-mail Google do celular do posto, como "Celular do posto".
 3. **Cadastros** (Tanques e fechamentos; Veículos e motoristas):
    - tanques: capacidade e saldo medido no dia da implantação;
-   - bombas: encerrante lido no dia da implantação;
+   - bombas: encerrante lido no dia da implantação. Posto com 1 tanque e 2 bombas: cadastre o tanque (ex.: `TQ01`) e as bombas 1 e 2, as duas ligadas a `TQ01`, cada uma com o próprio encerrante. No app, o frentista escolhe a bomba a cada lançamento, e o fechamento soma o que saiu pelas duas;
    - veículos e motoristas: importe os CSV exportados do KMM (`placa;capacidade_tanque_l;ultimo_km` e `nome;cpf`).
 
 **No celular do posto:**
