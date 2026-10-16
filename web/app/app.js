@@ -13,7 +13,7 @@ aplicarTema();
 // Conta de supervisor ou administrador usa o painel (versão de celular); no APK ele fica em painel/, no site em ../painel/
 const URL_PAINEL = __ALVO__ === 'android' ? 'painel/index.html' : '../painel/';
 
-const LIM = { kmSalto: 3000, tolCap: 1.05, tolEnc: 1, tolTanque: 20 };
+const LIM = { kmSalto: 3000, tolCap: 1.05, tolEnc: 1, tolTanque: 20, tolAfericao: 0.1 };   // aferição: 0,5% de 20 L
 const MAX_FOTOS = 6;
 const $ = id => document.getElementById(id);
 const conteudo = $('conteudo');
@@ -25,6 +25,7 @@ let aba = 'abastecer';
 let tela = null;                         // subtela: 'veiculo' | 'motorista' | null
 let aviso = null, enviando = false, semAcesso = false, semRede = false;
 let form = null, chegada = null, medidos = {}, fotosChegada = [], fotosFechamento = [];
+let afericao = { bomba: null, visor: '' }, fotosAfericao = [];
 let novoVeiculo = null, novoMotorista = null;
 let escolhido = null, pin = '';          // tela de login do frentista
 let guia = 'frentista';
@@ -46,6 +47,15 @@ function avisoFechamento() {
   return falta > 0 && falta <= 30
     ? `<div class="toast info" role="status">Faltam ${falta} min para o fechamento do turno (${esc(estado.turno.fechamento)}). Não esqueça de medir os tanques e fechar o turno.</div>` : '';
 }
+// Aferição é semanal em cada bomba: lembra na tela de abastecer quando alguma passou de 7 dias
+function avisoAfericao() {
+  const vencidas = (estado?.bombas || []).filter(b => b.afericao_vencida).map(b => b.numero);
+  return vencidas.length ? `<div class="toast info" role="status">Aferição da${vencidas.length > 1 ? 's bombas' : ' bomba'} ${vencidas.join(' e ')} vencida (é semanal).
+    Faça na aba <b>Aferir</b>.</div>` : '';
+}
+const diasDesde = iso => Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+const situacaoAfericao = b => !b.ultima_afericao ? 'nunca feita' : b.afericao_vencida ? 'vencida'
+  : diasDesde(b.ultima_afericao) === 0 ? 'feita hoje' : `há ${diasDesde(b.ultima_afericao)} dia(s)`;
 const diaFechado = () => `<div class="aviso-grande"><b>O turno de hoje já foi fechado.</b>
   <p>Depois do fechamento, nada mais entra com a data de hoje. Se faltou algum lançamento, fale com o supervisor.</p></div>`;
 const novaChegada = () => ({ tanque: estado?.tanques?.[0]?.tanque ?? '', hora: horaAgora(), nf: '', litros: '', valor: '', antes: '', depois: '',
@@ -177,7 +187,7 @@ function telaAbastecer() {
   const v = estado.veiculos.find(x => x.placa === form.placa);
   const variosTanques = new Set(estado.bombas.map(b => b.tanque)).size > 1;
   return `
-    ${avisoHtml()}${avisoFechamento()}
+    ${avisoHtml()}${avisoFechamento()}${avisoAfericao()}
     <div class="field"><span class="lbl">Em qual bomba foi o abastecimento?</span><div class="bombas">
       ${estado.bombas.map(b => `<button type="button" data-bomba="${b.numero}" aria-pressed="${b.numero === form.bomba}"><b>${b.numero}</b>
         <small>${variosTanques ? `${esc(b.tanque)} · ` : ''}enc. ${nf(b.encerrante_anterior)}</small></button>`).join('')}
@@ -302,6 +312,29 @@ function telaChegada() {
     ${botaoEnviar('chegada', 'Registrar chegada', pode)}`;
 }
 
+function telaAfericao() {
+  if (estado.fechado_hoje) return avisoHtml() + diaFechado();
+  if (!estado.bombas.length) return '<p class="hint">Nenhuma bomba cadastrada. Peça ao supervisor.</p>';
+  const f = afericao, v = parseNum(f.visor), dif = v - 20;
+  const pode = f.bomba != null && v >= 15 && v <= 25 && fotosAfericao.length > 0;
+  const ml = x => `${x > 0 ? '+' : ''}${nf(x * 1000, 0)} mL`;
+  return `${avisoHtml()}
+    <p class="hint">Uma vez por semana em cada bomba: encha a medida padrão de 20 L, anote quanto o visor marcou e tire a foto.
+      Depois devolva o diesel para o tanque.</p>
+    <div class="field"><span class="lbl">Qual bomba você aferiu?</span><div class="bombas">
+      ${estado.bombas.map(b => `<button type="button" data-afericao-bomba="${b.numero}" aria-pressed="${b.numero === f.bomba}"><b>${b.numero}</b>
+        <small>${esc(situacaoAfericao(b))}</small></button>`).join('')}
+    </div></div>
+    <div class="field"><label class="lbl" for="a-visor">Litros no visor (medida de 20 L)</label>
+      <input id="a-visor" class="num" inputmode="decimal" value="${esc(f.visor)}"></div>
+    ${v > 0 ? `<ul class="checks"><li class="${v < 15 || v > 25 ? 'falha' : Math.abs(dif) <= LIM.tolAfericao ? 'ok' : 'falha'}">${v < 15 || v > 25
+      ? 'Confira o número: deve ficar perto de 20 L.' : Math.abs(dif) <= LIM.tolAfericao
+      ? `Diferença de ${ml(dif)}: dentro da tolerância (até 100 mL).` : `Diferença de ${ml(dif)}: acima da tolerância. O supervisor vai receber um alerta.`}</li></ul>` : ''}
+    ${fotosAfericao.length ? '' : '<p class="hint">Tire a foto da medida cheia junto com o visor da bomba.</p>'}
+    ${blocoFotos(fotosAfericao, 'afericao', 1, 3)}
+    ${botaoEnviar('aferir', 'Registrar aferição', pode)}`;
+}
+
 function telaFechar() {
   if (estado.tanques.some(t => t.fechado)) {
     return `${avisoHtml()}<div class="toast ok">O turno de hoje já foi fechado.</div>${estado.tanques.map(t => `<div class="tanque"><h3>${esc(t.tanque)}</h3>
@@ -351,7 +384,7 @@ function render(manterFoco) {
   else if (!login) html = telaLoginFrentista();
   else if (tela === 'veiculo') html = telaNovoVeiculo();
   else if (tela === 'motorista') html = telaNovoMotorista();
-  else html = { abastecer: telaAbastecer, turno: telaTurno, chegada: telaChegada, fechar: telaFechar, ajuda: telaAjuda }[aba]();
+  else html = { abastecer: telaAbastecer, turno: telaTurno, chegada: telaChegada, aferir: telaAfericao, fechar: telaFechar, ajuda: telaAjuda }[aba]();
   conteudo.innerHTML = html;
   document.querySelectorAll('#abas button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === aba)));
   if (foco) { const el = $(foco); if (el) { el.focus(); try { if (pos != null) el.setSelectionRange(pos, pos); } catch { /* campo sem seleção */ } } }
@@ -374,6 +407,7 @@ conteudo.addEventListener('input', e => {
   } else if (mapaChegada[id]) chegada[mapaChegada[id]] = e.target.value;
   else if (mapaVeiculo[id]) novoVeiculo[mapaVeiculo[id]] = e.target.value;
   else if (mapaMotorista[id]) novoMotorista[mapaMotorista[id]] = e.target.value;
+  else if (id === 'a-visor') afericao.visor = e.target.value;
   else if (e.target.dataset.tanque) medidos[e.target.dataset.tanque] = e.target.value;
   else return;
   render(e.target.tagName !== 'SELECT');
@@ -384,6 +418,7 @@ conteudo.addEventListener('click', async e => {
   if (alvo('[data-tema]')) { definirTema(alvo('[data-tema]').dataset.tema); return; }
   if (alvo('[data-guia]')) { guia = alvo('[data-guia]').dataset.guia; return render(); }
   if (alvo('[data-bomba]')) { form.bomba = Number(alvo('[data-bomba]').dataset.bomba); aviso = null; return render(); }
+  if (alvo('[data-afericao-bomba]')) { afericao.bomba = Number(alvo('[data-afericao-bomba]').dataset.afericaoBomba); aviso = null; return render(); }
   if (alvo('[data-desconto]')) { form.desconto = alvo('[data-desconto]').dataset.desconto === 'sim'; return render(); }
   if (alvo('[data-frentista]')) { escolhido = Number(alvo('[data-frentista]').dataset.frentista); pin = ''; aviso = null; return render(); }
   if (alvo('[data-tecla]')) return teclarPin(alvo('[data-tecla]').dataset.tecla);
@@ -403,6 +438,7 @@ conteudo.addEventListener('click', async e => {
   if (acao === 'enviar') await executar(enviarAbastecimento);
   if (acao === 'chegada') await executar(enviarChegada);
   if (acao === 'fechar') await executar(fecharTurno);
+  if (acao === 'aferir') await executar(enviarAfericao);
   if (acao === 'salvar-veiculo') await executar(salvarVeiculo);
   if (acao === 'salvar-motorista') await executar(salvarMotorista);
 });
@@ -420,7 +456,7 @@ $('sair').addEventListener('click', async () => {
   render();
 });
 
-const listaDeFotos = dono => ({ chegada: fotosChegada, fechamento: fotosFechamento, veiculo: novoVeiculo?.fotos }[dono]);
+const listaDeFotos = dono => ({ chegada: fotosChegada, fechamento: fotosFechamento, afericao: fotosAfericao, veiculo: novoVeiculo?.fotos }[dono]);
 
 async function adicionarFoto(dono) {
   try {
@@ -476,6 +512,18 @@ async function enviarChegada() {
   aviso = { tipo: 'ok', texto: `Chegada da NF ${f.nf} registrada${caminhos.length ? ` com ${caminhos.length} foto(s)` : ''}.` };
   fotosChegada.forEach(x => URL.revokeObjectURL(x.previa)); fotosChegada = [];
   chegada = novaChegada();
+  await atualizarEstado();
+}
+
+async function enviarAfericao() {
+  const f = afericao;
+  const caminhos = await enviarFotos('afericao', fotosAfericao);
+  const r = await rpc('registrar_afericao', { p_sessao: login.sessao, p_fotos: caminhos, p_dados: {
+    uuid: f.uuid || (f.uuid = crypto.randomUUID()), bomba: f.bomba, data_hora: `${hojeISO()}T${horaAgora()}:00`, visor: parseNum(f.visor) } });
+  aviso = r.alerta ? { tipo: 'warn', texto: `Aferição da bomba ${f.bomba} registrada com diferença acima da tolerância: o supervisor foi avisado.` }
+    : { tipo: 'ok', texto: `Aferição da bomba ${f.bomba} registrada. Dentro da tolerância.` };
+  fotosAfericao.forEach(x => URL.revokeObjectURL(x.previa)); fotosAfericao = [];
+  afericao = { bomba: null, visor: '' };
   await atualizarEstado();
 }
 

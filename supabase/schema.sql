@@ -284,16 +284,37 @@ create table if not exists fechamentos (
   unique (tanque, data)
 );
 
+-- Aferição semanal de cada bomba: o frentista enche a medida padrão de 20 L e informa quanto o visor marcou.
+-- O diesel volta para o tanque (não conta como saída), mas o encerrante da bomba anda: por isso a aferição
+-- guarda o encerrante e entra na conta do "encerrante anterior" do próximo abastecimento.
+create table if not exists afericoes (
+  id                   bigint generated always as identity primary key,
+  uuid                 uuid not null unique,
+  bomba                integer not null references bombas (numero),
+  data_hora            timestamp(0) not null,
+  medida_l             numeric(6, 3) not null default 20 check (medida_l > 0),
+  visor_l              numeric(6, 3) not null check (visor_l > 0 and visor_l < 100),
+  diferenca_l          numeric(6, 3) generated always as (visor_l - medida_l) stored,
+  encerrante_anterior  numeric(14, 3) not null,
+  encerrante           numeric(14, 3) not null,
+  frentista_id         bigint not null references frentistas (id),
+  conta                text not null,
+  recebido_em          timestamptz not null default now()
+);
+create index if not exists ix_afer_bomba on afericoes (bomba, data_hora);
+
 -- Fotos (os arquivos ficam no Storage, bucket "fotos"; aqui fica a qual registro cada uma pertence)
 create table if not exists fotos (
   id            bigint generated always as identity primary key,
-  entidade      text not null check (entidade in ('fechamento', 'chegada', 'veiculo')),
+  entidade      text not null,
   chave         text not null,
   caminho       text not null unique,
   frentista_id  bigint references frentistas (id),
   conta         text not null,
   criado_em     timestamptz not null default now()
 );
+alter table fotos drop constraint if exists fotos_entidade_check;
+alter table fotos add constraint fotos_entidade_check check (entidade in ('fechamento', 'chegada', 'veiculo', 'afericao'));
 create index if not exists ix_fotos_chave on fotos (entidade, chave);
 
 create table if not exists auditoria (
@@ -464,6 +485,17 @@ begin
      and conta = meu_email();
 end $$;
 
+-- Último encerrante conhecido da bomba antes de um momento (null = até agora): o cadastro inicial,
+-- os abastecimentos não cancelados e as aferições (que fazem o encerrante andar sem ser saída do tanque).
+create or replace function encerrante_ate(p_bomba integer, p_antes timestamp, p_excluir bigint default null) returns numeric
+language sql stable as $$
+  select greatest(
+    (select encerrante_inicial from bombas where numero = p_bomba),
+    (select max(encerrante) from abastecimentos where bomba = p_bomba and (p_antes is null or data_hora < p_antes)
+        and id is distinct from p_excluir and status <> 'Cancelado'),
+    (select max(encerrante) from afericoes where bomba = p_bomba and (p_antes is null or data_hora < p_antes)))
+$$;
+
 -- ---------- Conferência (as mesmas regras que substituem o analista) ----------
 create or replace function conferir_abastecimento(
   p_data_hora timestamp, p_placa text, p_motorista text, p_km integer, p_litros numeric,
@@ -514,9 +546,7 @@ begin
   if v_bomba.numero is null then
     p := p || format('Bomba %s não existe.', p_bomba);
   else
-    select max(encerrante) into v_enc_ant from abastecimentos
-     where bomba = p_bomba and data_hora < p_data_hora and id is distinct from p_excluir and status <> 'Cancelado';
-    v_enc_ant := greatest(v_enc_ant, v_bomba.encerrante_inicial);
+    v_enc_ant := encerrante_ate(p_bomba, p_data_hora, p_excluir);
     if p_encerrante <= v_enc_ant then
       p := p || format('Encerrante %s não é maior que o anterior da bomba %s (%s).', fmt(p_encerrante), p_bomba, fmt(v_enc_ant));
     elsif abs(p_encerrante - v_enc_ant - p_litros) > 1 then
@@ -527,9 +557,7 @@ begin
     if p_encerrante <= v_enc_ant or abs(p_encerrante - v_enc_ant - p_litros) > 1 then
       select o.numero into v_outra from bombas o
        where o.ativa and o.numero <> p_bomba
-         and abs(p_encerrante - p_litros - greatest(o.encerrante_inicial,
-               (select max(a.encerrante) from abastecimentos a where a.bomba = o.numero and a.data_hora < p_data_hora
-                   and a.id is distinct from p_excluir and a.status <> 'Cancelado'))) <= 1
+         and abs(p_encerrante - p_litros - encerrante_ate(o.numero, p_data_hora, p_excluir)) <= 1
        order by o.numero limit 1;
       if v_outra is not null then
         p := p || format('O encerrante bate com a bomba %s. Confira se a bomba escolhida está certa.', v_outra);
@@ -616,8 +644,10 @@ begin
     -- O celular não recebe CPF
     'motoristas', coalesce((select jsonb_agg(nome order by nome) from motoristas where ativo), '[]'),
     'bombas', coalesce((select jsonb_agg(jsonb_build_object(
-        'numero', b.numero, 'tanque', b.tanque,
-        'encerrante_anterior', greatest(b.encerrante_inicial, (select max(encerrante) from abastecimentos a where a.bomba = b.numero and a.status <> 'Cancelado'))
+        'numero', b.numero, 'tanque', b.tanque, 'encerrante_anterior', encerrante_ate(b.numero, null),
+        -- aferição é semanal: vencida se a última tem 7 dias ou mais (ou se nunca foi feita)
+        'ultima_afericao', (select max(data_hora) from afericoes f where f.bomba = b.numero),
+        'afericao_vencida', coalesce((select max(data_hora) from afericoes f where f.bomba = b.numero) <= agora_local() - interval '7 days', true)
       ) order by b.numero) from bombas b where b.ativa), '[]'),
     'tanques', calcular_fechamento(v_hoje),
     'turno', (select jsonb_build_object('abertura', to_char(abertura, 'HH24:MI'), 'fechamento', to_char(fechamento, 'HH24:MI'))
@@ -779,6 +809,50 @@ begin
                   jsonb_build_object('medidos', p_medidos, 'frentista_id', v_frent, 'frentista', (select nome from frentistas where id = v_frent),
                                      'fotos', coalesce(cardinality(p_fotos), 0)));
   return v_res;
+end $$;
+
+-- Aferição semanal: bomba, litros que o visor marcou ao encher a medida de 20 L e foto (obrigatória).
+-- Tolerância: 0,5% da medida (100 mL em 20 L); acima disso o supervisor vê o alerta.
+create or replace function registrar_afericao(p_sessao text, p_dados jsonb, p_fotos text[] default '{}') returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r jsonb := p_dados; v_ex afericoes; v_id bigint; v_frent bigint; v_bomba integer; v_dh timestamp; v_visor numeric;
+        v_ant numeric; v_dif numeric;
+begin
+  perform exigir(array['posto', 'supervisor']);
+  v_frent := frentista_da_sessao(p_sessao);
+  v_bomba := (r ->> 'bomba')::integer;
+  perform trava_lancamento(v_bomba, null);   -- o encerrante da bomba anda: espera quem está lançando nela
+  select * into v_ex from afericoes where uuid = (r ->> 'uuid')::uuid;
+  if v_ex.id is not null then
+    return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'diferenca', v_ex.diferenca_l, 'alerta', abs(v_ex.diferenca_l) > 0.1);
+  end if;
+  if not exists (select 1 from bombas where numero = v_bomba and ativa) then
+    raise exception 'Bomba % não existe.', coalesce(v_bomba::text, '(vazia)') using errcode = '22023';
+  end if;
+  v_dh := date_trunc('second', (r ->> 'data_hora')::timestamp);
+  perform validar_data_lancamento(v_dh);
+  v_visor := (r ->> 'visor')::numeric;
+  if v_visor is null or v_visor < 15 or v_visor > 25 then
+    raise exception 'Informe quantos litros o visor marcou ao encher a medida de 20 L.' using errcode = '22023';
+  end if;
+  if coalesce(cardinality(p_fotos), 0) = 0 then
+    raise exception 'Tire a foto da medida cheia junto com o visor da bomba.' using errcode = '22023';
+  end if;
+  v_ant := encerrante_ate(v_bomba, v_dh);
+  insert into afericoes (uuid, bomba, data_hora, medida_l, visor_l, encerrante_anterior, encerrante, frentista_id, conta)
+  values ((r ->> 'uuid')::uuid, v_bomba, v_dh, 20, v_visor, v_ant, v_ant + v_visor, v_frent, meu_email())
+  on conflict (uuid) do nothing
+  returning id into v_id;
+  if v_id is null then   -- mesmo envio gravado ao mesmo tempo por outra conexão
+    select * into v_ex from afericoes where uuid = (r ->> 'uuid')::uuid;
+    return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'diferenca', v_ex.diferenca_l, 'alerta', abs(v_ex.diferenca_l) > 0.1);
+  end if;
+  v_dif := v_visor - 20;
+  perform registrar_fotos('afericao', v_id::text, p_fotos, v_frent);
+  perform auditar('afericao.registrada', 'afericao', v_id::text,
+                  jsonb_build_object('bomba', v_bomba, 'visor', v_visor, 'diferenca', v_dif, 'fotos', cardinality(p_fotos),
+                                     'frentista', (select nome from frentistas where id = v_frent)));
+  return jsonb_build_object('uuid', r ->> 'uuid', 'id', v_id, 'diferenca', v_dif, 'alerta', abs(v_dif) > 0.1);
 end $$;
 
 -- O frentista cadastra veículo ou motorista que ainda não existe. Depois, só o supervisor edita.
@@ -1006,7 +1080,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['acessos', 'frentistas', 'frentistas_pin', 'sessoes_frentista', 'veiculos', 'motoristas', 'tanques',
-                           'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'fotos', 'auditoria', 'configuracoes'] loop
+                           'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'fotos', 'auditoria', 'configuracoes'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon', t);
     execute format('drop policy if exists supervisor_le on %I', t);
@@ -1014,7 +1088,7 @@ begin
   end loop;
   -- Leitura pelo painel (PINs, sessões e auditoria têm regra própria)
   foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'tanques', 'bombas',
-                           'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'fotos', 'configuracoes'] loop
+                           'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'fotos', 'configuracoes'] loop
     execute format('create policy supervisor_le on %I for select to authenticated using (sou_gestor())', t);
   end loop;
   -- Cadastros: supervisor e administrador editam direto (com histórico automático pelos gatilhos)
@@ -1047,7 +1121,8 @@ begin
     -- Enviar: qualquer conta liberada, só no formato pasta/uuid.jpg. Apagar: só supervisor e administrador. Alterar: ninguém.
     execute $p$create policy fotos_enviar on storage.objects for insert to authenticated with check (
       bucket_id = 'fotos' and public.meu_papel() is not null
-      and (public.foto_valida(name, 'fechamento') or public.foto_valida(name, 'chegada') or public.foto_valida(name, 'veiculo')))$p$;
+      and (public.foto_valida(name, 'fechamento') or public.foto_valida(name, 'chegada') or public.foto_valida(name, 'veiculo')
+           or public.foto_valida(name, 'afericao')))$p$;
     execute $p$create policy fotos_ver on storage.objects for select to authenticated using (
       bucket_id = 'fotos' and public.sou_gestor())$p$;
     execute $p$create policy fotos_apagar on storage.objects for delete to authenticated using (
@@ -1067,6 +1142,7 @@ end $$;
 
 grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frentista(bigint, text), sair_frentista(text),
   registrar_abastecimento(text, jsonb), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[]),
+  registrar_afericao(text, jsonb, text[]),
   cadastrar_veiculo_app(text, text, numeric, integer, text), cadastrar_motorista_app(text, text, text),
   definir_pin(bigint, text), decidir_autorizacao(bigint, boolean, text),
   decidir_abastecimento(bigint, text, text, jsonb), marcar_erro_kmm(bigint, text),

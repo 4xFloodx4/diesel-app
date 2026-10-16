@@ -8,6 +8,7 @@ const IC = {
   regua: '<path d="M3 2h4v12H3zM3 5h2M3 8h2M3 11h2M11 2v12M9 4l2-2 2 2M9 12l2 2 2-2"/>', relogio: '<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>',
   lista: '<path d="M2 4h12M2 8h8M2 12h5"/>', kmm: '<path d="M3 3h10v3H3zM3 8h10v5H3z"/>', pessoa: '<circle cx="8" cy="5.5" r="2.5"/><path d="M3 14c.6-2.6 2.6-4 5-4s4.4 1.4 5 4"/>',
   cadeado: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
+  medida: '<path d="M4 3h8l-1 11H5zM4.4 7h7.2M6.5 10h3"/>',
 };
 const ic = k => `<span class="ic"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${IC[k]}</svg></span>`;
 export const GUIA = {
@@ -33,6 +34,11 @@ export const GUIA = {
     ['regua', 'Chegada de diesel e fechamento do turno', 'Régua, nota fiscal e fotos', `<ol><li><b>Chegada:</b> meça a régua antes da descarga, descarregue e meça de novo. Lance a NF, os litros e as duas medidas, e tire foto da nota.</li>
       <li><b>Fechamento (até as {FECHAMENTO}):</b> meça cada tanque com a régua, digite as medidas, tire foto da régua e toque em <b>Fechar turno</b>.</li></ol>
       <div class="dica">Se a medida ficar mais de 20 L longe do esperado, o supervisor é avisado. Meça com calma e com o caminhão já fora da bomba.</div>`],
+    ['medida', 'Aferição da bomba', 'Uma vez por semana em cada bomba', `<ol><li>Encha a <b>medida padrão de 20 L</b> com a bomba.</li>
+      <li>Anote quanto o <b>visor</b> marcou e tire a foto da medida cheia junto com o visor.</li>
+      <li>No app, aba <b>Aferir</b>: toque na bomba, digite os litros do visor, anexe a foto e toque em <b>Registrar aferição</b>.</li>
+      <li><b>Devolva o diesel para o tanque.</b> Ele não conta como saída, e o app já desconta do encerrante no próximo abastecimento.</li></ol>
+      <div class="dica">Diferença de até 100 mL é normal. Acima disso, o supervisor é avisado. Quando passar de 7 dias, o app lembra na tela de abastecer.</div>`],
   ],
   supervisor: [
     ['lista', 'Decisões do dia', 'Autorizações e exceções', `<p>Tudo o que precisa de você aparece em <b>Decisões</b>, com a cor do tipo:</p>
@@ -55,6 +61,7 @@ export const GUIA = {
     ['Encerrante', 'O contador total da bomba, que só aumenta. A diferença entre o encerrante final e o anterior é quanto saiu de verdade.'],
     ['Visor', 'O mostrador de litros do abastecimento atual, que zera a cada abastecimento.'],
     ['Régua', 'A medida do diesel dentro do tanque, feita no fechamento e na chegada de diesel.'],
+    ['Aferição', 'Teste semanal de cada bomba: encher a medida padrão de 20 L e comparar com o visor. Tolerância de 100 mL (0,5%).'],
     ['Saldo esperado', 'Saldo inicial + chegadas − o que saiu pelos encerrantes. A régua do fechamento é comparada com ele.'],
     ['Exceção', 'Lançamento em que algum número não bateu (KM, capacidade, encerrante, repetição ou hora). Vai para o supervisor.'],
     ['Autorização', 'Lançamento que só entra com aprovação: sem desconto do motorista ou fora do horário do turno.'],

@@ -84,6 +84,13 @@ export function descrever(e, ctx = {}) {
       tipo = 'lancamento';
       frase = `registrou a chegada da NF <b>${esc(d.nf)}</b>: ${esc(valorSimples(d.litros))} L${d.tanque ? ` no ${esc(d.tanque)}` : ''}${d.fotos ? `, com ${esc(d.fotos)} foto(s)` : ''}.`;
       break;
+    case 'afericao.registrada': {
+      tipo = 'lancamento';
+      const dif = Number(d.diferenca);
+      frase = `aferiu a <b>bomba ${esc(d.bomba)}</b>: o visor marcou ${esc(valorSimples(d.visor))} L na medida de 20 L
+        (${dif > 0 ? '+' : ''}${esc(valorSimples(Math.round(dif * 1000)))} mL${Math.abs(dif) > 0.1 ? ', acima da tolerância' : ''})${d.fotos ? `, com ${esc(d.fotos)} foto(s)` : ''}.`;
+      break;
+    }
     case 'fechamento.registrado': {
       tipo = 'lancamento';
       const med = Object.entries(d.medidos || {}).map(([t, v]) => `${esc(t)} ${esc(valorSimples(v))} L`).join(', ');

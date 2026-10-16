@@ -50,6 +50,12 @@ export function dadosDemo() {
   ];
   const chegadas = [{ id: 7, tanque: 'TQ01', data_hora: `${hojeISO()}T09:20:00`, nf: '45871', litros: 5000, valor_total: 29850, regua_antes: 6300, regua_depois: 11290,
     placa_caminhao: 'TNK1B22', placa_carreta: null, motorista: 'Fornecedor', frentistas: { nome: 'Ana Ribeiro' }, alerta: null }];
+  // Aferição semanal: a bomba 1 está em dia; a da bomba 2 venceu e a última deu diferença acima da tolerância
+  const afericoes = [
+    { id: 3, bomba: 1, data_hora: `${dia(2)}T07:10:00`, medida_l: 20, visor_l: 20.04, diferenca_l: 0.04, frentistas: { nome: 'Ana Ribeiro' } },
+    { id: 2, bomba: 2, data_hora: `${dia(9)}T07:25:00`, medida_l: 20, visor_l: 20.15, diferenca_l: 0.15, frentistas: { nome: 'Carlos Mendes' } },
+    { id: 1, bomba: 1, data_hora: `${dia(9)}T07:15:00`, medida_l: 20, visor_l: 19.98, diferenca_l: -0.02, frentistas: { nome: 'Carlos Mendes' } },
+  ];
   const frentistas = [{ id: 1, nome: 'Ana Ribeiro', ativo: true }, { id: 2, nome: 'Carlos Mendes', ativo: true }, { id: 3, nome: 'Paulo Nunes', ativo: true },
     { id: 4, nome: 'Rogério Assis', ativo: false }];
   const acessos = [{ email: ADM, nome: 'Administrador (demo)', papel: 'administrador', ativo: true }, { email: SUP, nome: 'Marcos Lima', papel: 'supervisor', ativo: true },
@@ -75,6 +81,6 @@ export function dadosDemo() {
       detalhes: { antes: { email: 'posto2@empresa-demo.com.br', nome: 'Celular posto 2', papel: 'posto', ativo: true }, depois: { email: 'posto2@empresa-demo.com.br', nome: 'Celular posto 2', papel: 'posto', ativo: false } } },
   ];
   const porStatus = abastecimentos.reduce((m, a) => ((m[a.status] = (m[a.status] || 0) + 1), m), {});
-  return { abastecimentos, veiculos, motoristas, tanques, bombas, hoje, fechamentos, chegadas, frentistas, acessos, lotes, auditoria, porStatus,
+  return { abastecimentos, veiculos, motoristas, tanques, bombas, hoje, fechamentos, chegadas, afericoes, frentistas, acessos, lotes, auditoria, porStatus,
     configuracoes: { abertura: '05:00', fechamento: '23:00' }, fotos: {} };
 }

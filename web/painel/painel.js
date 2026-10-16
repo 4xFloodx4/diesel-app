@@ -265,17 +265,20 @@ function tabelaLancamentos(lista) {
 
 TELAS.resumo = async () => {
   const r = await carregar(async () => {
-    const [hoje, abHoje, pend, prontos, ultLote] = await Promise.all([
+    const [hoje, abHoje, pend, prontos, ultLote, bombas, af] = await Promise.all([
       rpc('calcular_fechamento', { p_dia: hojeISO() }),
       consulta(supabase.from('abastecimentos').select('id, data_hora, placa, motorista, km, litros, bomba, status, problemas, desconto_confirmado, fora_horario, frentistas(nome)')
         .gte('data_hora', hojeISO()).order('data_hora', { ascending: false }).limit(2000)),
       consulta(supabase.from('abastecimentos').select('*, frentistas(nome)').in('status', STATUS_DECISAO).order('data_hora', { ascending: false }).limit(200)),
       consulta(supabase.from('abastecimentos').select('litros').eq('status', 'Pronto').limit(10000)),
       consulta(supabase.from('lotes').select('*').order('id', { ascending: false }).limit(1)),
+      consulta(supabase.from('bombas').select('numero').eq('ativa', true).order('numero')),
+      consulta(supabase.from('afericoes').select('bomba, data_hora').order('data_hora', { ascending: false }).limit(500)),
     ]);
-    return { hoje, abHoje, pend, prontos, ultLote: ultLote[0] };
+    return { hoje, abHoje, pend, prontos, ultLote: ultLote[0], bombas, af };
   }, d => ({ hoje: d.hoje, abHoje: d.abastecimentos.filter(a => a.data_hora.startsWith(hojeISO())), pend: d.abastecimentos.filter(a => STATUS_DECISAO.includes(a.status)),
-    prontos: d.abastecimentos.filter(a => a.status === 'Pronto'), ultLote: d.lotes.find(l => l.situacao === 'Confirmado') }));
+    prontos: d.abastecimentos.filter(a => a.status === 'Pronto'), ultLote: d.lotes.find(l => l.situacao === 'Confirmado'),
+    bombas: d.bombas.filter(b => b.ativa), af: d.afericoes }));
   if (!r) return;
   const saida = r.hoje.reduce((s, t) => s + Number(t.saidas), 0);
   const nAut = r.pend.filter(a => a.status === 'Aguardando autorização').length;
@@ -291,6 +294,8 @@ TELAS.resumo = async () => {
       <div><small>Último lote</small><b class="num">${l ? `lote ${esc(l.id)}` : '—'}</b><em>${l ? `${esc(l.situacao.toLowerCase())} · ${quandoLocal(l.fechado_em || l.criado_em)}` : 'nenhum lote ainda'}</em></div>
       <div><small>Fechamento</small><b class="num">${fechado ? 'fechado' : 'aberto'}</b><em>turno ${esc(est.turno.abertura)}–${esc(est.turno.fechamento)}</em></div>
     </section>
+    ${r.bombas.length ? `<section class="painel"><header><h2>Aferição das bombas</h2><span>1 vez por semana · <button class="link" type="button" data-ir="tanques">ver aferições</button></span></header>
+      <div class="corpo">${r.bombas.map(b => `<b>Bomba ${esc(b.numero)}</b> ${chipAfericao(ultimaAfericao(r.af, b.numero))}`).join(' &nbsp; ')}</div></section>` : ''}
     <div class="grade">
       <section class="painel"><header><h2>Tanques</h2><span>esperado = inicial + chegadas − saídas</span></header>
         <div class="corpo">${r.hoje.length ? `<div class="tanques">${r.hoje.map(tanqueHtml).join('')}</div>` : '<p class="hint">Nenhum tanque cadastrado. Cadastre em Tanques e fechamentos.</p>'}</div></section>
@@ -486,6 +491,16 @@ async function contarFotos(entidade) {
   return r.reduce((m, f) => ((m[f.chave] = (m[f.chave] || 0) + 1), m), {});
 }
 
+// ---------- Aferição das bombas (semanal) ----------
+const TOL_AFERICAO = 0.1;   // 0,5% da medida de 20 L
+const ultimaAfericao = (af, numero) => af.find(a => a.bomba === numero);   // af vem do mais novo para o mais antigo
+function chipAfericao(a) {
+  if (!a) return '<span class="chip alerta">nunca feita</span>';
+  const dias = Math.floor((Date.now() - new Date(a.data_hora).getTime()) / 86400000);
+  return `<span class="chip ${dias >= 7 ? 'alerta' : 'ok'}">${dataBR(a.data_hora)}${dias >= 7 ? ' · vencida' : ''}</span>`;
+}
+const mL = x => `${Number(x) > 0 ? '+' : ''}${nf(Number(x) * 1000, 0)} mL`;
+
 // ---------- Tanques e fechamentos ----------
 const botaoAtivo = (tabela, chave, id, campo, ativo) =>
   `<button class="btn small ghost" type="button" data-acao="alternar" data-tabela="${tabela}" data-chave="${chave}" data-id="${esc(id)}" data-campo="${campo}" data-valor="${!ativo}">${ativo ? 'Desativar' : 'Reativar'}</button>`;
@@ -500,8 +515,9 @@ TELAS.tanques = async () => {
     hoje: await rpc('calcular_fechamento', { p_dia: hojeISO() }),
     fs: await consulta(supabase.from('fechamentos').select('*, frentistas(nome)').order('data', { ascending: false }).order('tanque').limit(200)),
     cs: await consulta(supabase.from('chegadas').select('*, frentistas(nome)').order('data_hora', { ascending: false }).limit(200)),
-    ff: await contarFotos('fechamento'), fc: await contarFotos('chegada'), cad: await carregarCadastros(),
-  }), d => ({ hoje: d.hoje, fs: d.fechamentos, cs: d.chegadas, ff: { [d.fechamentos[0].data]: 2 }, fc: { 7: 1 }, cad: cadDemo(d) }));
+    af: await consulta(supabase.from('afericoes').select('*, frentistas(nome)').order('data_hora', { ascending: false }).limit(200)),
+    ff: await contarFotos('fechamento'), fc: await contarFotos('chegada'), fa: await contarFotos('afericao'), cad: await carregarCadastros(),
+  }), d => ({ hoje: d.hoje, fs: d.fechamentos, cs: d.chegadas, af: d.afericoes, ff: { [d.fechamentos[0].data]: 2 }, fc: { 7: 1 }, fa: {}, cad: cadDemo(d) }));
   if (!r) return;
   est.cad = r.cad;
   const c = r.cad;
@@ -521,6 +537,12 @@ TELAS.tanques = async () => {
         <td>${esc([x.placa_caminhao, x.placa_carreta].filter(Boolean).join(' / '))}<span class="sub">${esc(x.motorista || '')}</span></td><td>${esc(x.frentistas?.nome || '')}</td>
         <td class="quebra">${esc(x.alerta || '')}</td><td>${botaoFotos('chegada', x.id, `Chegada NF ${x.nf}`, r.fc[String(x.id)])}</td></tr>`).join('')}
       </tbody></table></div>` : '<p class="vazio">Nenhuma chegada ainda.</p>'}</section>
+    <section class="painel"><header><h2>Aferições</h2><span>1 vez por semana em cada bomba · medida de 20 L · diferença acima de 100 mL fica destacada</span></header>
+      ${r.af.length ? `<div class="tabela"><table><thead><tr><th>Data</th><th class="n">Bomba</th><th class="n">Medida</th><th class="n">Visor</th><th class="n">Diferença</th><th>Aferido por</th><th></th></tr></thead><tbody>
+      ${r.af.map(a => `<tr class="${Math.abs(a.diferenca_l) > TOL_AFERICAO ? 'divergente' : ''}"><td>${dataHora(a.data_hora)}</td><td class="n">${esc(a.bomba)}</td>
+        <td class="n">${nf(a.medida_l, 3)} L</td><td class="n">${nf(a.visor_l, 3)} L</td><td class="n">${mL(a.diferenca_l)}</td><td>${esc(a.frentistas?.nome || '')}</td>
+        <td>${botaoFotos('afericao', a.id, `Aferição da bomba ${a.bomba} em ${dataBR(a.data_hora)}`, r.fa[String(a.id)])}</td></tr>`).join('')}
+      </tbody></table></div>` : '<p class="vazio">Nenhuma aferição ainda.</p>'}</section>
     <div class="duas">
       <section class="painel"><header><h2>Tanques</h2><span>${c.tanques.length} cadastrado(s)</span></header>
         <div class="tabela"><table><thead><tr><th>Tanque</th><th class="n">Capacidade</th><th class="n">Saldo inicial</th><th></th></tr></thead><tbody>
@@ -530,8 +552,9 @@ TELAS.tanques = async () => {
           ${campo('Saldo inicial (L)', 'saldo_inicial', 'class="num" inputmode="decimal" required')}<button class="btn small" type="submit">Salvar tanque</button></form>
           <p class="hint">O saldo inicial só vale até o primeiro fechamento. Depois, cada dia começa com a medição do anterior.</p></div></section>
       <section class="painel"><header><h2>Bombas</h2><span>${c.bombas.length} cadastrada(s)</span></header>
-        <div class="tabela"><table><thead><tr><th class="n">Bomba</th><th>Tanque</th><th class="n">Encerrante inicial</th><th>Ativa</th><th></th></tr></thead><tbody>
-          ${c.bombas.map(b => `<tr><td class="n">${esc(b.numero)}</td><td>${esc(b.tanque)}</td><td class="n">${nf(b.encerrante_inicial, 3)}</td><td>${b.ativa ? 'Sim' : 'Não'}</td><td>${botaoEditar('bombas', b.numero)}</td></tr>`).join('')}</tbody></table></div>
+        <div class="tabela"><table><thead><tr><th class="n">Bomba</th><th>Tanque</th><th class="n">Encerrante inicial</th><th>Ativa</th><th>Última aferição</th><th></th></tr></thead><tbody>
+          ${c.bombas.map(b => `<tr><td class="n">${esc(b.numero)}</td><td>${esc(b.tanque)}</td><td class="n">${nf(b.encerrante_inicial, 3)}</td><td>${b.ativa ? 'Sim' : 'Não'}</td>
+            <td>${b.ativa ? chipAfericao(ultimaAfericao(r.af, b.numero)) : ''}</td><td>${botaoEditar('bombas', b.numero)}</td></tr>`).join('')}</tbody></table></div>
         <div class="corpo"><form class="formulario" data-form="bombas">
           ${campo('Número', 'numero', 'class="num" inputmode="numeric" required')}
           ${rotulo('Tanque', `<select name="tanque">${c.tanques.map(t => `<option>${esc(t.codigo)}</option>`).join('')}</select>`)}
