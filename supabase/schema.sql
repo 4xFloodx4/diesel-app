@@ -156,6 +156,8 @@ create table if not exists veiculos (
 );
 alter table veiculos add column if not exists criado_por text;
 alter table veiculos add column if not exists criado_em timestamptz default now();
+-- Placa importada da planilha (só placa + motorista) entra sem capacidade: o frentista informa no primeiro abastecimento
+alter table veiculos alter column capacidade_l drop not null;
 
 create table if not exists motoristas (
   id     bigint generated always as identity primary key,
@@ -165,6 +167,11 @@ create table if not exists motoristas (
 );
 alter table motoristas add column if not exists criado_por text;
 alter table motoristas add column if not exists criado_em timestamptz default now();
+-- Motorista importado só com o nome entra sem CPF: o frentista informa no primeiro abastecimento dele.
+-- Sem CPF o lançamento não vai para o KMM (a conferência aponta e o lote recusa).
+alter table motoristas alter column cpf drop not null;
+alter table motoristas drop constraint if exists motoristas_cpf_check;
+alter table motoristas add constraint motoristas_cpf_check check (cpf is null or (cpf ~ '^\d{11}$' and cpf_valido(cpf)));
 
 -- Quais motoristas costumam dirigir cada placa: no app, ao escolher a placa, eles aparecem primeiro.
 -- Nasce do próprio lançamento (placa + motorista cadastrados) e da planilha importada no painel.
@@ -536,7 +543,7 @@ begin
   if not placa_valida(p_placa) and placa_valida(p_motorista) then p := p || 'Placa e nome do motorista parecem trocados de campo.'::text; end if;
   if v_veic.placa is null then p := p || format('Placa %s não cadastrada.', coalesce(nullif(v_placa, ''), '(vazia)')); end if;
   if v_mot.id is null then p := p || format('Motorista ''%s'' não cadastrado.', p_motorista);
-  elsif length(v_mot.cpf) <> 11 then p := p || format('Motorista ''%s'' sem CPF válido no cadastro (o KMM exige CPF).', v_mot.nome);
+  elsif coalesce(length(v_mot.cpf), 0) <> 11 then p := p || format('Motorista ''%s'' sem CPF válido no cadastro (o KMM exige CPF).', v_mot.nome);
   end if;
 
   -- KM crescente e salto razoável (só contam abastecimentos aceitos, anteriores a este)
@@ -552,7 +559,9 @@ begin
         p := p || format('Salto de KM suspeito: %s km desde o último abastecimento.', fmt(p_km - v_km_ant));
       end if;
     end if;
-    if p_litros > v_veic.capacidade_l * 1.05 then
+    if v_veic.capacidade_l is null then
+      p := p || format('Placa %s sem o tamanho do tanque no cadastro.', v_placa);
+    elsif p_litros > v_veic.capacidade_l * 1.05 then
       p := p || format('%s L acima da capacidade do tanque (%s L).', fmt(p_litros), fmt(v_veic.capacidade_l));
     end if;
   end if;
@@ -661,6 +670,8 @@ begin
       ) order by v.placa) from veiculos v where v.ativo), '[]'),
     -- O celular não recebe CPF
     'motoristas', coalesce((select jsonb_agg(nome order by nome) from motoristas where ativo), '[]'),
+    -- só os nomes de quem ainda está sem CPF (o app pede o CPF no primeiro abastecimento)
+    'motoristas_sem_cpf', coalesce((select jsonb_agg(nome order by nome) from motoristas where ativo and cpf is null), '[]'),
     'bombas', coalesce((select jsonb_agg(jsonb_build_object(
         'numero', b.numero, 'tanque', b.tanque, 'encerrante_anterior', encerrante_ate(b.numero, null),
         -- aferição é semanal: vencida se a última tem 7 dias ou mais (ou se nunca foi feita)
@@ -712,6 +723,7 @@ declare
   r jsonb := p_dados; v_ex abastecimentos; c jsonb; v_id bigint; v_status text;
   v_dh timestamp; v_km integer; v_lt numeric; v_enc numeric; v_bomba integer; v_frent bigint;
   v_desconto boolean; v_just text; v_fora boolean; v_just_h text; v_c configuracoes;
+  v_veic veiculos; v_mot motoristas; v_cap numeric; v_cpf text;
 begin
   perform exigir(array['posto', 'supervisor']);
   v_frent := frentista_da_sessao(p_sessao);
@@ -741,6 +753,25 @@ begin
     select * into v_c from configuracoes where id = 1;
     raise exception 'Lançamento fora do horário do turno (% às %): escreva a justificativa para o supervisor.',
       to_char(v_c.abertura, 'HH24:MI'), to_char(v_c.fechamento, 'HH24:MI') using errcode = '22023';
+  end if;
+  -- Primeira vez de uma placa ou de um motorista vindos da planilha (só placa + nome): completa o cadastro.
+  -- O KM não precisa: o deste lançamento vira o primeiro da placa.
+  select * into v_veic from veiculos where placa = normaliza_placa(r ->> 'placa') and ativo;
+  if v_veic.placa is not null and v_veic.capacidade_l is null then
+    v_cap := (r ->> 'capacidade')::numeric;
+    if v_cap is null or v_cap <= 0 or v_cap >= 5000 then
+      raise exception 'Informe o tamanho do tanque do veículo % (primeiro abastecimento dele).', v_veic.placa using errcode = '22023';
+    end if;
+    update veiculos set capacidade_l = v_cap where placa = v_veic.placa;
+  end if;
+  select * into v_mot from motoristas where nome = normaliza_nome(r ->> 'motorista') and ativo;
+  v_cpf := nullif(regexp_replace(coalesce(r ->> 'cpf', ''), '\D', '', 'g'), '');
+  if v_mot.id is not null and v_mot.cpf is null and v_cpf is not null then
+    if not cpf_valido(v_cpf) then raise exception 'CPF do motorista inválido.' using errcode = '22023'; end if;
+    if exists (select 1 from motoristas where cpf = v_cpf and id <> v_mot.id) then
+      raise exception 'Este CPF já é de outro motorista. Fale com o supervisor.' using errcode = '22023';
+    end if;
+    update motoristas set cpf = v_cpf where id = v_mot.id;
   end if;
   c := conferir_abastecimento(v_dh, r ->> 'placa', r ->> 'motorista', v_km, v_lt, v_enc, v_bomba);
   v_status := case when v_desconto and not v_fora then c ->> 'status' else 'Aguardando autorização' end;
@@ -917,10 +948,13 @@ end $$;
 
 -- ---------- Funções do painel ----------
 -- Vínculos placa ↔ motorista vindos da planilha: [{linha, placa, motorista, cpf}]. O motorista é achado pelo CPF
--- (se vier) ou pelo nome. Só inclui: não apaga vínculo que não está na planilha. Devolve quantos deram certo e os erros.
+-- (se vier) ou pelo nome. Placa ou motorista que ainda não existe é criado: a placa sem capacidade e o motorista
+-- sem CPF (se não vier), e o frentista completa no primeiro abastecimento.
+-- Só inclui: não apaga vínculo que não está na planilha. Devolve quantos deram certo, quantos foram criados e os erros.
 create or replace function importar_vinculos(p_linhas jsonb) returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare l jsonb; i integer := 0; v_linha text; v_placa text; v_cpf text; v_mot bigint; v_ok integer := 0; v_erros text[] := '{}';
+declare l jsonb; i integer := 0; v_linha text; v_placa text; v_cpf text; v_nome text; v_mot bigint; v_ok integer := 0; v_erros text[] := '{}';
+        v_veic_novos integer := 0; v_mot_novos integer := 0;
 begin
   perform exigir(array['supervisor']);
   if jsonb_typeof(p_linhas) is distinct from 'array' or jsonb_array_length(p_linhas) > 5000 then
@@ -930,20 +964,36 @@ begin
     i := i + 1;
     v_linha := coalesce(l ->> 'linha', (i + 1)::text);
     v_placa := normaliza_placa(l ->> 'placa');
-    v_cpf := nullif(regexp_replace(coalesce(l ->> 'cpf', ''), '\D', '', 'g'), '');
-    select id into v_mot from motoristas
-     where case when v_cpf is not null then cpf = lpad(v_cpf, 11, '0') else nome = normaliza_nome(l ->> 'motorista') end
-     limit 1;
-    if not exists (select 1 from veiculos where placa = v_placa) then
-      v_erros := v_erros || format('Linha %s: placa %s não cadastrada', v_linha, coalesce(nullif(v_placa, ''), '(vazia)'));
-    elsif v_mot is null then
-      v_erros := v_erros || format('Linha %s: motorista %s não cadastrado', v_linha, coalesce(v_cpf, nullif(trim(l ->> 'motorista'), ''), '(vazio)'));
+    v_cpf := lpad(nullif(regexp_replace(coalesce(l ->> 'cpf', ''), '\D', '', 'g'), ''), 11, '0');
+    v_nome := normaliza_nome(l ->> 'motorista');
+    select id into v_mot from motoristas where case when v_cpf is not null then cpf = v_cpf else nome = v_nome end limit 1;
+    if v_mot is null and v_cpf is not null then   -- CPF novo, mas o nome pode já existir (cadastrado sem CPF)
+      select id into v_mot from motoristas where nome = v_nome and cpf is null;
+    end if;
+    if not placa_valida(v_placa) then
+      v_erros := v_erros || format('Linha %s: placa %s inválida', v_linha, coalesce(nullif(v_placa, ''), '(vazia)'));
+    elsif v_mot is null and length(v_nome) < 3 then
+      v_erros := v_erros || format('Linha %s: falta o nome do motorista', v_linha);
+    elsif v_cpf is not null and not cpf_valido(v_cpf) then
+      v_erros := v_erros || format('Linha %s: CPF de %s inválido', v_linha, v_nome);
+    elsif v_mot is null and exists (select 1 from motoristas where nome = v_nome) then
+      v_erros := v_erros || format('Linha %s: %s já está cadastrado com outro CPF', v_linha, v_nome);
     else
+      -- motorista que estava sem CPF e a planilha trouxe: completa
+      if v_mot is not null and v_cpf is not null then update motoristas set cpf = v_cpf where id = v_mot and cpf is null; end if;
+      if not exists (select 1 from veiculos where placa = v_placa) then
+        insert into veiculos (placa, criado_por) values (v_placa, 'Planilha');
+        v_veic_novos := v_veic_novos + 1;
+      end if;
+      if v_mot is null then
+        insert into motoristas (nome, cpf, criado_por) values (v_nome, v_cpf, 'Planilha') returning id into v_mot;
+        v_mot_novos := v_mot_novos + 1;
+      end if;
       insert into veiculo_motoristas (placa, motorista_id, criado_por) values (v_placa, v_mot, 'Planilha') on conflict do nothing;
       v_ok := v_ok + 1;
     end if;
   end loop;
-  return jsonb_build_object('ok', v_ok, 'erros', to_jsonb(v_erros));
+  return jsonb_build_object('ok', v_ok, 'veiculos_novos', v_veic_novos, 'motoristas_novos', v_mot_novos, 'erros', to_jsonb(v_erros));
 end $$;
 
 create or replace function decidir_autorizacao(p_id bigint, p_aprovar boolean, p_motivo text) returns jsonb

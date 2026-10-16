@@ -639,7 +639,9 @@ TELAS.veiculos = async () => {
     ${nativo ? '' : `<section class="painel"><header><h2>Base em Excel</h2><span>veículos, motoristas e quem dirige cada placa</span></header>
       <div class="corpo"><div class="acoes"><button class="btn small" type="button" data-acao="exportar-base">Exportar base (Excel)</button>
         ${rotulo('Importar base (Excel ou CSV)', '<input type="file" accept=".xlsx,.xls,.csv" data-importar-base>')}</div>
-        <p class="hint">A planilha tem 3 abas: <b>Veiculos</b> (placa, capacidade_tanque_l, km_inicial, ativo), <b>Motoristas</b> (nome, cpf, ativo) e
+        <p class="hint"><b>Planilha simples:</b> só as colunas <b>PLACA</b> e <b>NOME</b> (do motorista). Placa e motorista que não existem são criados e vinculados;
+          o tamanho do tanque e o CPF o frentista informa no primeiro abastecimento.</p>
+        <p class="hint"><b>Base completa:</b> a planilha exportada tem 3 abas: <b>Veiculos</b> (placa, capacidade_tanque_l, km_inicial, ativo), <b>Motoristas</b> (nome, cpf, ativo) e
           <b>Vinculos</b> (placa, motorista, cpf). O jeito mais fácil: exporte, edite no Excel e importe de volta. A importação inclui e atualiza;
           para tirar alguém de uso, ponha <b>Não</b> em "ativo". Vínculo se remove aqui na lista, no × ao lado do nome.</p></div></section>`}
     <div class="duas">
@@ -649,7 +651,7 @@ TELAS.veiculos = async () => {
           ${campo('Último KM conhecido', 'km_inicial', 'class="num" inputmode="numeric"')}${simNao('Ativo', 'ativo')}
           <button class="btn small" type="submit">Salvar veículo</button></form></div>
         <div class="tabela"><table><thead><tr><th>Placa</th><th class="n">Tanque</th><th class="n">KM inicial</th><th>Ativo</th><th>Motoristas</th><th></th></tr></thead><tbody>
-        ${c.veiculos.map(v => `<tr><td>${placa(v.placa)}<span class="sub">${esc(v.criado_por || 'Painel')}</span></td><td class="n">${nf(v.capacidade_l, 0)}</td><td class="n">${nf(v.km_inicial, 0)}</td><td>${v.ativo ? 'Sim' : 'Não'}</td>
+        ${c.veiculos.map(v => `<tr><td>${placa(v.placa)}<span class="sub">${esc(v.criado_por || 'Painel')}</span></td><td class="n">${v.capacidade_l == null ? '<span class="chip pend">a informar</span>' : nf(v.capacidade_l, 0)}</td><td class="n">${nf(v.km_inicial, 0)}</td><td>${v.ativo ? 'Sim' : 'Não'}</td>
           <td class="quebra">${(porPlaca[v.placa] || []).map(x => `<span class="vinculo">${esc(x.motoristas?.nome || '')}<button type="button" class="link" data-acao="desvincular"
             data-id="${esc(v.placa)}" data-motorista="${esc(x.motorista_id)}" aria-label="Tirar ${esc(x.motoristas?.nome || '')} da placa ${esc(v.placa)}">×</button></span>`).join(' ')}</td>
           <td><div class="acoes">${botaoEditar('veiculos', v.placa)}${botaoFotos('veiculo', v.placa, `Veículo ${v.placa}`, c.fv[v.placa])}
@@ -660,7 +662,7 @@ TELAS.veiculos = async () => {
           ${simNao('Ativo', 'ativo')}<button class="btn small" type="submit">Salvar motorista</button></form>
           <p class="hint">Ao editar um motorista, digite o CPF completo de novo (na lista ele aparece mascarado).</p></div>
         <div class="tabela"><table><thead><tr><th>Nome</th><th>CPF</th><th>Ativo</th><th></th></tr></thead><tbody>
-        ${c.motoristas.map(m => `<tr><td>${esc(m.nome)}<span class="sub">${esc(m.criado_por || 'Painel')}</span></td><td class="num">${mascaraCpf(m.cpf)}</td><td>${m.ativo ? 'Sim' : 'Não'}</td>
+        ${c.motoristas.map(m => `<tr><td>${esc(m.nome)}<span class="sub">${esc(m.criado_por || 'Painel')}</span></td><td class="num">${m.cpf ? mascaraCpf(m.cpf) : '<span class="chip pend">a informar</span>'}</td><td>${m.ativo ? 'Sim' : 'Não'}</td>
           <td>${botaoEditar('motoristas', m.id)}</td></tr>`).join('')}</tbody></table></div></section>
     </div>`;
 };
@@ -901,9 +903,9 @@ function exportarBase(c) {
   const simNaoTxt = b => (b ? 'Sim' : 'Não');
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['placa', 'capacidade_tanque_l', 'km_inicial', 'ativo'],
-    ...c.veiculos.map(v => [v.placa, Number(v.capacidade_l), v.km_inicial ?? '', simNaoTxt(v.ativo)])]), 'Veiculos');
+    ...c.veiculos.map(v => [v.placa, v.capacidade_l == null ? '' : Number(v.capacidade_l), v.km_inicial ?? '', simNaoTxt(v.ativo)])]), 'Veiculos');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['nome', 'cpf', 'ativo'],
-    ...c.motoristas.map(m => [m.nome, String(m.cpf), simNaoTxt(m.ativo)])]), 'Motoristas');   // CPF como texto: não perde zero à esquerda
+    ...c.motoristas.map(m => [m.nome, m.cpf ? String(m.cpf) : '', simNaoTxt(m.ativo)])]), 'Motoristas');   // CPF como texto: não perde zero à esquerda
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['placa', 'motorista', 'cpf'],
     ...c.vinculos.map(x => [x.placa, x.motoristas?.nome || '', String(x.motoristas?.cpf || '')])]), 'Vinculos');
   XLSX.writeFile(wb, `base_veiculos_motoristas_${hojeISO()}.xlsx`);
@@ -917,9 +919,12 @@ const coluna = (linha, ...nomes) => {
 };
 const lerAtivo = s => (s === '' ? undefined : !/^(n|nao|false|0|inativ|desativ)/i.test(chaveColuna(s)));
 // O tipo de cada aba sai das colunas (o nome da aba não importa; um CSV do KMM também serve)
+// Placa + nome do motorista (sem capacidade) = vínculos: cria a placa e o motorista que faltarem
 function tipoDaAba(colunas) {
+  const temMotorista = ['motorista', 'nome', 'nome_motorista', 'motorista_nome'].some(c => colunas.includes(c));
+  const temCapacidade = ['capacidade_tanque_l', 'capacidade_l', 'capacidade', 'tanque_l'].some(c => colunas.includes(c));
+  if (colunas.includes('placa') && (temMotorista || colunas.includes('cpf')) && !temCapacidade) return 'vinculos';
   if (colunas.includes('nome') && colunas.includes('cpf')) return 'motoristas';
-  if (colunas.includes('placa') && (colunas.includes('motorista') || colunas.includes('cpf'))) return 'vinculos';
   if (colunas.includes('placa')) return 'veiculos';
   return null;
 }
@@ -965,10 +970,14 @@ async function importarBase(arquivo) {
   if (abas.vinculos.length) {
     avisar(`Importando os vínculos (${abas.vinculos.length})…`, 'info');
     const r = await chamar(() => rpc('importar_vinculos', { p_linhas: abas.vinculos.map(({ l, linha }) => ({
-      linha, placa: coluna(l, 'placa'), motorista: coluna(l, 'motorista', 'nome'), cpf: coluna(l, 'cpf') })) }));
-    if (r) { resultado.vinculos = r.ok; erros.push(...r.erros.map(x => `Vinculos ${x.replace(/^Linha/, 'linha')}`)); }
+      linha, placa: coluna(l, 'placa'), motorista: coluna(l, 'motorista', 'nome', 'nome_motorista', 'motorista_nome'), cpf: coluna(l, 'cpf') })) }));
+    if (r) {
+      resultado.vinculos = r.ok; resultado.veiculos += r.veiculos_novos; resultado.motoristas += r.motoristas_novos;
+      erros.push(...r.erros.map(x => `Vinculos ${x.replace(/^Linha/, 'linha')}`));
+    }
   }
   avisar(`Importado: ${resultado.veiculos} veículo(s), ${resultado.motoristas} motorista(s), ${resultado.vinculos} vínculo(s).`
+    + ' O que veio sem capacidade ou sem CPF o frentista completa no primeiro abastecimento.'
     + (erros.length ? ` ${erros.length} com erro: ${erros.slice(0, 20).join(' | ')}${erros.length > 20 ? ' …' : ''}` : ''), erros.length ? 'warn' : 'ok');
   abrir('veiculos', { semCarregando: true });
 }

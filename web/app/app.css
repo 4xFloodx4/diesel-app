@@ -34,6 +34,7 @@ html, body { height: 100%; }
   border: 1px solid var(--risco-forte); border-radius: 8px; background: var(--placa); color: var(--tinta); cursor: pointer; }
 .sugestoes b { font: 600 15px var(--f-num); letter-spacing: .02em; }
 .sugestoes small { font-size: 12px; color: var(--tinta-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.primeira-vez { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px dashed var(--diesel); border-radius: 8px; background: var(--placa); }
 .vinculados { display: flex; flex-wrap: wrap; gap: 6px; }
 .vinculados button { min-height: 40px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--diesel); background: var(--placa); color: var(--tinta);
   font-weight: 600; font-size: 13px; cursor: pointer; }

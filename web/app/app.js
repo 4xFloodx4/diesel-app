@@ -32,7 +32,9 @@ let guia = 'frentista';
 
 // A bomba não vem marcada: o frentista escolhe a cada lançamento (só vem marcada se o posto tiver uma bomba só)
 // placa/motorista: o que foi escolhido da lista; placaTxt/motoristaTxt: o que o frentista está digitando
+// capacidade/cpf: só quando a placa ou o motorista ainda não têm isso no cadastro
 const novoForm = () => ({ bomba: estado?.bombas?.length === 1 ? estado.bombas[0].numero : null, placa: '', motorista: '', placaTxt: '', motoristaTxt: '',
+  capacidade: '', cpf: '',
   hora: horaAgora(), km: '', litros: '', enc: '', obs: '', desconto: null, justificativa: '', justHorario: '' });
 
 // ---------- Busca de placa e motorista (o frentista digita o começo e toca na sugestão) ----------
@@ -42,6 +44,19 @@ const semAcento = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').
 // "jo si" acha "JOÃO DA SILVA": cada pedaço digitado é o começo de alguma palavra do nome
 const bateNome = (nome, busca) => { const palavras = semAcento(nome).split(' '); return semAcento(busca).split(' ').every(p => palavras.some(w => w.startsWith(p))); };
 const vinculados = placa => estado.veiculos.find(v => v.placa === placa)?.motoristas || [];
+// Placa ou motorista vindos da planilha só com placa + nome: o app pede o que falta no primeiro abastecimento
+const precisaCapacidade = f => { const v = estado.veiculos.find(x => x.placa === f.placa); return !!v && v.capacidade_l == null; };
+const precisaCpf = f => !!f.motorista && (estado.motoristas_sem_cpf || []).includes(f.motorista);
+function cpfValido(t) {
+  const d = String(t || '').replace(/\D/g, '');
+  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return false;
+  for (const n of [9, 10]) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += Number(d[i]) * (n + 1 - i);
+    if ((s * 10) % 11 % 10 !== Number(d[n])) return false;
+  }
+  return true;
+}
 function sugestoesPlaca(txt) {
   const q = soPlaca(txt);
   if (!q) return [];
@@ -107,15 +122,18 @@ function conferir(f) {
   if (f.desconto === null) bloqueios.push('Diga se o diesel foi descontado do motorista.');
   if (f.desconto === false && f.justificativa.trim().length < 5) bloqueios.push('Escreva a justificativa para o supervisor.');
   if (foraDoTurno(f.hora) && f.justHorario.trim().length < 5) bloqueios.push('Fora do horário do turno: escreva a justificativa.');
+  if (precisaCapacidade(f) && !(parseNum(f.capacidade) > 0 && parseNum(f.capacidade) < 5000)) bloqueios.push('Informe o tamanho do tanque do veículo.');
+  if (precisaCpf(f) && !cpfValido(f.cpf)) bloqueios.push('Informe o CPF do motorista.');
+  const cap = v?.capacidade_l ?? (parseNum(f.capacidade) > 0 ? parseNum(f.capacidade) : null);
   const regras = [];
   const ka = v?.km_anterior == null ? null : Number(v.km_anterior);
   if (!v || !(km > 0)) regras.push({ e: null, t: 'KM maior que o último da placa.' });
   else if (ka != null && km <= ka) regras.push({ e: false, t: `KM ${nf(km, 0)} é menor ou igual ao último desta placa (${nf(ka, 0)}).` });
   else if (ka != null && km - ka > LIM.kmSalto) regras.push({ e: false, t: `Rodou ${nf(km - ka, 0)} km desde o último abastecimento. Confira o painel.` });
   else regras.push({ e: true, t: ka == null ? 'Primeiro abastecimento registrado desta placa.' : `KM coerente: +${nf(km - ka, 0)} km.` });
-  if (!v || !(lt > 0)) regras.push({ e: null, t: 'Litros dentro da capacidade do tanque.' });
-  else if (lt > v.capacidade_l * LIM.tolCap) regras.push({ e: false, t: `${nf(lt)} L passa da capacidade do tanque deste veículo (${nf(v.capacidade_l, 0)} L).` });
-  else regras.push({ e: true, t: `Cabe no tanque do veículo (${nf(v.capacidade_l, 0)} L).` });
+  if (!v || !(lt > 0) || cap == null) regras.push({ e: null, t: 'Litros dentro da capacidade do tanque.' });
+  else if (lt > cap * LIM.tolCap) regras.push({ e: false, t: `${nf(lt)} L passa da capacidade do tanque deste veículo (${nf(cap, 0)} L).` });
+  else regras.push({ e: true, t: `Cabe no tanque do veículo (${nf(cap, 0)} L).` });
   const ea = encAnterior(f.bomba);
   const bate = anterior => Math.abs(enc - anterior - lt) <= LIM.tolEnc;
   if (f.bomba == null || !(enc > 0) || !(lt > 0)) regras.push({ e: null, t: 'Encerrante bate com os litros.' });
@@ -210,7 +228,9 @@ function campoPlaca(v) {
   const txt = soPlaca(form.placaTxt), lista = form.placa ? [] : sugestoesPlaca(form.placaTxt);
   return `<div class="field"><label class="lbl" for="f-placa">Placa</label>
     <input id="f-placa" class="busca" maxlength="8" autocapitalize="characters" ${SEM_TECLADO_ESPERTO} placeholder="Digite o começo da placa" value="${esc(form.placaTxt)}">
-    ${form.placa ? `<span class="escolhido">✓ ${esc(form.placa)} · tanque de ${nf(v.capacidade_l, 0)} L</span>` : ''}
+    ${form.placa ? `<span class="escolhido">✓ ${esc(form.placa)}${v.capacidade_l == null ? '' : ` · tanque de ${nf(v.capacidade_l, 0)} L`}</span>` : ''}
+    ${precisaCapacidade(form) ? `<div class="primeira-vez"><label class="lbl" for="f-cap">Primeiro abastecimento desta placa: tamanho do tanque do veículo (L)</label>
+      <input id="f-cap" class="num" inputmode="decimal" value="${esc(form.capacidade)}"></div>` : ''}
     ${lista.length ? `<div class="sugestoes">${lista.map(x => `<button type="button" data-sug-placa="${esc(x.placa)}"><b>${esc(x.placa)}</b>
       <small>${esc(vinculados(x.placa).slice(0, 2).join(', '))}${vinculados(x.placa).length > 2 ? '…' : ''}</small></button>`).join('')}</div>` : ''}
     ${form.placa ? '' : txt && !lista.length
@@ -225,6 +245,9 @@ function campoMotorista() {
       `<button type="button" data-sug-motorista="${esc(m)}">${esc(m)}</button>`).join('')}</div>` : ''}
     <input id="f-motorista" class="busca" maxlength="120" autocapitalize="characters" ${SEM_TECLADO_ESPERTO} placeholder="${vinc.length ? 'Ou digite o nome' : 'Digite o nome'}" value="${esc(form.motoristaTxt)}">
     ${form.motorista ? `<span class="escolhido">✓ ${esc(form.motorista)}${form.placa && !vinc.includes(form.motorista) ? ' · fica vinculado a esta placa ao enviar' : ''}</span>` : ''}
+    ${precisaCpf(form) ? `<div class="primeira-vez"><label class="lbl" for="f-cpf">Primeiro abastecimento deste motorista: CPF (o KMM exige)</label>
+      <input id="f-cpf" class="num" inputmode="numeric" maxlength="14" ${SEM_TECLADO_ESPERTO} value="${esc(form.cpf)}">
+      ${form.cpf.replace(/\D/g, '').length === 11 && !cpfValido(form.cpf) ? '<span class="hint">CPF inválido: confira os números.</span>' : ''}</div>` : ''}
     ${lista.length ? `<div class="sugestoes">${lista.map(m => `<button type="button" data-sug-motorista="${esc(m)}"><b>${esc(m)}</b>
       ${vinc.includes(m) ? '<small>desta placa</small>' : ''}</button>`).join('')}</div>` : ''}
     ${form.motorista ? '' : nome && !lista.length
@@ -445,7 +468,7 @@ function render(manterFoco) {
 }
 
 // ---------- Eventos ----------
-const mapaForm = { 'f-hora': 'hora', 'f-km': 'km', 'f-litros': 'litros', 'f-enc': 'enc',
+const mapaForm = { 'f-cap': 'capacidade', 'f-cpf': 'cpf', 'f-hora': 'hora', 'f-km': 'km', 'f-litros': 'litros', 'f-enc': 'enc',
   'f-obs': 'obs', 'f-just': 'justificativa', 'f-just-h': 'justHorario' };
 const mapaChegada = { 'c-tanque': 'tanque', 'c-hora': 'hora', 'c-nf': 'nf', 'c-litros': 'litros', 'c-valor': 'valor', 'c-antes': 'antes',
   'c-depois': 'depois', 'c-placa': 'placa', 'c-carreta': 'carreta', 'c-motorista': 'motorista', 'c-cpf': 'cpf' };
@@ -564,6 +587,7 @@ async function enviarAbastecimento() {
     km: Math.round(parseNum(form.km)), litros: parseNum(form.litros), encerrante: parseNum(form.enc), bomba: form.bomba,
     obs: c.falhas.length ? form.obs.trim() : null, desconto: form.desconto, justificativa_desconto: form.desconto ? null : form.justificativa.trim(),
     justificativa_horario: foraDoTurno(form.hora) ? form.justHorario.trim() : null,
+    capacidade: precisaCapacidade(form) ? parseNum(form.capacidade) : null, cpf: precisaCpf(form) ? form.cpf.replace(/\D/g, '') : null,
   };
   const r = await rpc('registrar_abastecimento', { p_sessao: login.sessao, p_dados: dados });
   aviso = r.status === 'Aguardando autorização' ? { tipo: 'warn', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: aguardando autorização do supervisor.` }

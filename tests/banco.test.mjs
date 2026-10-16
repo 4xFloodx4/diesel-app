@@ -261,22 +261,45 @@ test('frentista cadastra motorista com CPF válido; duplicado é recusado', asyn
   await assert.rejects(rpc(POSTO, 'cadastrar_motorista_app', { p_sessao: sessao, p_nome: 'Outra Pessoa', p_cpf: '11144477735' }), /já cadastrado/);
 });
 
-test('supervisor importa vínculos da planilha: acha o motorista pelo nome ou CPF e aponta os erros', async () => {
+test('supervisor importa planilha de placa + nome: cria o que falta, vincula e aponta os erros', async () => {
   await assert.rejects(rpc(POSTO, 'importar_vinculos', { p_linhas: [{ placa: 'ABC1D23', motorista: 'JOAO DA SILVA' }] }), /Acesso negado/);
   const r = await rpc(CHEFE, 'importar_vinculos', { p_linhas: [
     { linha: 2, placa: 'def-4567', motorista: 'maria souza' },
-    { linha: 3, placa: 'ZZZ9Z99', motorista: 'JOAO DA SILVA' },
-    { linha: 4, placa: 'ABC1D23', cpf: '111.444.777-35' },
-    { linha: 5, placa: 'ABC1D23', motorista: 'João da Silva' },   // já existe: conta como certo e não duplica
-    { linha: 6, placa: 'ABC1D23', motorista: 'Ninguém Cadastrado' },
+    { linha: 3, placa: 'JKL2M34', motorista: 'Pedro Novo' },          // placa e motorista novos: criados sem capacidade e sem CPF
+    { linha: 4, placa: 'ABC1D23', cpf: '111.444.777-35' },            // achado pelo CPF
+    { linha: 5, placa: 'ABC1D23', motorista: 'João da Silva' },       // já vinculado: conta como certo e não duplica
+    { linha: 6, placa: 'XX1', motorista: 'Fulano de Tal' },
+    { linha: 7, placa: 'ABC1D23', motorista: 'Maria Souza', cpf: '123.456.789-09' },
+    { linha: 8, placa: 'MNO3P45', motorista: '' },
   ] });
-  assert.equal(r.ok, 3);
-  assert.deepEqual(r.erros, ['Linha 3: placa ZZZ9Z99 não cadastrada', 'Linha 6: motorista Ninguém Cadastrado não cadastrado']);
+  assert.deepEqual([r.ok, r.veiculos_novos, r.motoristas_novos], [4, 1, 1]);
+  assert.deepEqual(r.erros, ['Linha 6: placa XX1 inválida', 'Linha 7: MARIA SOUZA já está cadastrado com outro CPF', 'Linha 8: falta o nome do motorista']);
+  const novo = (await db.query("select capacidade_l, criado_por from veiculos where placa = 'JKL2M34'")).rows[0];
+  assert.deepEqual(novo, { capacidade_l: null, criado_por: 'Planilha' });
   const e = await rpc(POSTO, 'estado_posto');
   assert.deepEqual(e.veiculos.find(v => v.placa === 'ABC1D23').motoristas, ['JOAO DA SILVA', 'MARIA SOUZA']);
   assert.deepEqual(e.veiculos.find(v => v.placa === 'DEF4567').motoristas, ['JOAO DA SILVA', 'MARIA SOUZA']);
   // o supervisor tira um vínculo pelo painel
   assert.equal((await como(CHEFE, "delete from veiculo_motoristas where placa = 'DEF4567' and motorista_id = (select id from motoristas where nome = 'MARIA SOUZA') returning placa")).length, 1);
+});
+
+test('placa e motorista da planilha: o frentista completa o tanque e o CPF no primeiro abastecimento', async () => {
+  let e = await rpc(POSTO, 'estado_posto');
+  const jkl = () => e.veiculos.find(v => v.placa === 'JKL2M34');
+  assert.equal(jkl().capacidade_l, null);
+  assert.deepEqual(jkl().motoristas, ['PEDRO NOVO']);
+  assert.ok(e.motoristas_sem_cpf.includes('PEDRO NOVO'));
+  assert.ok(!JSON.stringify(e).includes('11144477735'));   // continua sem mandar CPF para o celular
+  const base = { placa: 'JKL2M34', motorista: 'Pedro Novo', km: 50000, litros: 10, encerrante: 512070.05, bomba: 2 };
+  await assert.rejects(abastecer(reg(0, base)), /tamanho do tanque/);
+  await assert.rejects(abastecer(reg(0, { ...base, capacidade: 400, cpf: '529.982.247-25' })), /outro motorista/);
+  await assert.rejects(abastecer(reg(0, { ...base, capacidade: 400, cpf: '111.111.111-12' })), /CPF do motorista inválido/);
+  const a = await abastecer(reg(0, { ...base, capacidade: 400, cpf: '123.456.789-09' }));
+  assert.equal(a.status, 'Pronto', JSON.stringify(a.problemas));   // KM do lançamento vira o primeiro da placa
+  e = await rpc(POSTO, 'estado_posto');
+  assert.equal(Number(jkl().capacidade_l), 400);
+  assert.ok(!e.motoristas_sem_cpf.includes('PEDRO NOVO'));
+  assert.equal((await db.query("select cpf from motoristas where nome = 'PEDRO NOVO'")).rows[0].cpf, '12345678909');
 });
 
 // ---------- Chegada, fechamento e fotos ----------
@@ -293,9 +316,9 @@ test('chegada e fechamento guardam fotos; caminho de foto fora do padrão é rec
     litros: 1000, regua_antes: 11000, regua_depois: 12000 }, p_fotos: fotos });
   assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'chegada', p_chave: String(c.id) })).length, 2);
   const [t] = await rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_fotos: [foto('fechamento')] });
-  // saídas do tanque pelas 2 bombas: bomba 1 = 640 + 100 + 114 + 20 (os recusados foram cancelados e não contam), bomba 2 = 30 + 10;
+  // saídas do tanque pelas 2 bombas: bomba 1 = 640 + 100 + 114 + 20 (os recusados foram cancelados e não contam), bomba 2 = 30 + 10 + 10;
   // as aferições (20,05 L e 20,15 L) voltaram para o tanque e não contam; entrada: 1000
-  assert.equal(Number(t.saldo_calculado), 12000 + 1000 - 914);
+  assert.equal(Number(t.saldo_calculado), 12000 + 1000 - 924);
   await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 1 }, p_fotos: [] }), /já foi fechado/);
   // depois do fechamento, nada mais entra com a data do dia
   await assert.rejects(abastecer(reg(1, { km: 150900, litros: 10, encerrante: 7071910 })), /já foi fechado/);
@@ -313,16 +336,16 @@ test('supervisor não move lançamento para um dia já fechado', async () => {
 // ---------- Lote do KMM ----------
 test('lote do KMM: só entra o Pronto, não repete, marca erro e trava alteração', async () => {
   const lote = await rpc(CHEFE, 'gerar_lote');
-  assert.equal(lote.quantidade, 5);
-  assert.equal(Number(lote.litros), 640 + 100 + 20 + 30 + 10);
+  assert.equal(lote.quantidade, 6);
+  assert.equal(Number(lote.litros), 640 + 100 + 20 + 30 + 10 + 10);
   assert.equal(lote.linhas.length, lote.quantidade);
-  assert.deepEqual((await db.query('select quantidade, litros::float as litros from lotes where id = $1', [lote.id])).rows[0], { quantidade: 5, litros: 800 });
+  assert.deepEqual((await db.query('select quantidade, litros::float as litros from lotes where id = $1', [lote.id])).rows[0], { quantidade: 6, litros: 810 });
   assert.equal(lote.linhas[0].cpf, '52998224725');
   const lotesAntes = (await db.query('select count(*)::int as n from lotes')).rows[0].n;
   await assert.rejects(rpc(CHEFE, 'gerar_lote'), /Não há abastecimentos prontos/);
   assert.equal((await db.query('select count(*)::int as n from lotes')).rows[0].n, lotesAntes);   // lote vazio não fica gravado
   await rpc(CHEFE, 'marcar_erro_kmm', { p_id: lote.linhas[0].requisicao, p_mensagem: 'Placa bloqueada no KMM' });
-  assert.equal((await rpc(CHEFE, 'fechar_lote', { p_lote: lote.id, p_acao: 'confirmar' })).registros, 4);
+  assert.equal((await rpc(CHEFE, 'fechar_lote', { p_lote: lote.id, p_acao: 'confirmar' })).registros, 5);
   await assert.rejects(rpc(CHEFE, 'decidir_abastecimento', { p_id: lote.linhas[1].requisicao, p_acao: 'cancelar', p_motivo: 'teste de trava' }), /não pode ser alterado/);
 });
 
