@@ -1,54 +1,46 @@
-// App do frentista. O celular fica logado com a conta Google do posto; em cada lançamento o frentista
-// escolhe quem ele é. Funciona sem internet: os envios ficam numa fila no celular e vão quando a rede volta.
+// App do frentista. O celular fica logado com a conta Google do posto; cada frentista entra com nome + PIN
+// e continua logado até tocar em "Trocar". Precisa de internet para lançar: nada fica guardado só no celular.
 // O banco confere tudo de novo; o resultado que vale é o dele.
 import { rpc, supabase, contaAtual, entrarComGoogle, aoVoltarDoLogin, sair } from '../comum/supa.js';
 import { esc, nf, parseNum, hhmm, hojeISO, horaAgora, classeStatus, ler, gravar } from '../comum/util.js';
+import { tirarFoto, enviarFotos } from '../comum/fotos.js';
+import { prepararAtualizacao } from '../comum/atualizacao.js';
 
 const LIM = { kmSalto: 3000, tolCap: 1.05, tolEnc: 1, tolTanque: 20 };
+const MAX_FOTOS = 6;
 const $ = id => document.getElementById(id);
 const conteudo = $('conteudo');
 
-let conta = null;                          // e-mail da conta Google do celular
-let estado = ler('estado', null);          // cadastros e situação do posto (cópia para trabalhar sem rede)
-let fila = ler('fila', []);                // [{tipo, dados, localOk}] ainda não aceitos pelo banco
-let frentistaId = ler('frentista', null);  // último frentista escolhido neste celular
+let conta = null;                        // conta Google do celular
+let estado = null;                       // cadastros e situação do posto, sempre do banco
+let login = ler('frentistaLogin', null); // {sessao, id, nome}
 let aba = 'abastecer';
-let online = true, sincronizando = false, aviso = null, erroSync = null, semAcesso = false;
-let form = null, chegada = null, medidos = {};
+let tela = null;                         // subtela: 'veiculo' | 'motorista' | null
+let aviso = null, enviando = false, semAcesso = false, semRede = false;
+let form = null, chegada = null, medidos = {}, fotosChegada = [], fotosFechamento = [];
+let novoVeiculo = null, novoMotorista = null;
+let escolhido = null, pin = '';          // tela de login do frentista
 
-const frentistaValido = () => estado?.frentistas?.some(f => f.id === frentistaId);
-const nomeFrentista = id => estado?.frentistas?.find(f => f.id === id)?.nome ?? '';
-const novoForm = () => ({ bomba: estado?.bombas?.[0]?.numero ?? 1, placa: '', motorista: '', hora: horaAgora(), km: '', litros: '', enc: '', obs: '' });
+const novoForm = () => ({ bomba: estado?.bombas?.[0]?.numero ?? 1, placa: '', motorista: '', hora: horaAgora(), km: '', litros: '', enc: '',
+  obs: '', desconto: null, justificativa: '' });
 const novaChegada = () => ({ tanque: estado?.tanques?.[0]?.tanque ?? '', hora: horaAgora(), nf: '', litros: '', valor: '', antes: '', depois: '',
   placa: '', carreta: '', motorista: '', cpf: '' });
-const salvarFila = () => gravar('fila', fila);
 
-// ---------- Estado derivado: banco + o que ainda está na fila ----------
-function encAnterior(bomba) {
-  const b = estado.bombas.find(x => x.numero === bomba);
-  const naFila = fila.filter(f => f.tipo === 'abastecimento' && f.dados.bomba === bomba).map(f => f.dados.encerrante);
-  return Math.max(Number(b?.encerrante_anterior ?? 0), ...naFila);
-}
-function kmAnterior(placa) {
-  const v = estado.veiculos.find(x => x.placa === placa);
-  const naFila = fila.filter(f => f.tipo === 'abastecimento' && f.dados.placa === placa && f.localOk).map(f => f.dados.km);
-  const vals = [v?.km_anterior, ...naFila].filter(x => x != null).map(Number);
-  return vals.length ? Math.max(...vals) : null;
-}
-
+// ---------- Conferência na hora (o banco confere de novo) ----------
 function conferir(f) {
   const km = parseNum(f.km), lt = parseNum(f.litros), enc = parseNum(f.enc);
   const v = estado.veiculos.find(x => x.placa === f.placa);
   const bloqueios = [];
-  if (!frentistaValido()) bloqueios.push('Escolha quem está lançando.');
   if (!f.placa) bloqueios.push('Escolha a placa.');
   if (!f.motorista) bloqueios.push('Escolha o motorista.');
   if (!/^\d{2}:\d{2}$/.test(f.hora)) bloqueios.push('Informe a hora.');
   if (!(km > 0) || km >= 1e7) bloqueios.push('Informe o KM do painel.');
   if (!(lt > 0) || lt >= 5000) bloqueios.push('Informe os litros do visor.');
   if (!(enc > 0)) bloqueios.push('Informe o encerrante final.');
+  if (f.desconto === null) bloqueios.push('Diga se o diesel foi descontado do motorista.');
+  if (f.desconto === false && f.justificativa.trim().length < 5) bloqueios.push('Escreva a justificativa para o supervisor.');
   const regras = [];
-  const ka = v ? kmAnterior(f.placa) : null;
+  const ka = v?.km_anterior == null ? null : Number(v.km_anterior);
   if (!v || !(km > 0)) regras.push({ e: null, t: 'KM maior que o último da placa.' });
   else if (ka != null && km <= ka) regras.push({ e: false, t: `KM ${nf(km, 0)} é menor ou igual ao último desta placa (${nf(ka, 0)}).` });
   else if (ka != null && km - ka > LIM.kmSalto) regras.push({ e: false, t: `Rodou ${nf(km - ka, 0)} km desde o último abastecimento. Confira o painel.` });
@@ -61,72 +53,45 @@ function conferir(f) {
   else if (enc <= ea) regras.push({ e: false, t: `Encerrante ${nf(enc)} não é maior que o anterior da bomba ${f.bomba} (${nf(ea)}).` });
   else if (Math.abs(enc - ea - lt) > LIM.tolEnc) regras.push({ e: false, t: `Pelo encerrante saíram ${nf(enc - ea)} L, mas o visor diz ${nf(lt)} L.` });
   else regras.push({ e: true, t: `Encerrante bate com os litros (${nf(enc - ea)} L).` });
-  const dh = `${hojeISO()}T${f.hora}`;
-  const dup = lt > 0 && [
-    ...estado.hoje.filter(r => r.status !== 'Cancelado').map(r => ({ placa: r.placa, dh: String(r.data_hora).slice(0, 16), lt: Number(r.litros) })),
-    ...fila.filter(x => x.tipo === 'abastecimento').map(x => ({ placa: x.dados.placa, dh: x.dados.data_hora.slice(0, 16), lt: x.dados.litros })),
-  ].some(r => r.placa === f.placa && r.dh === dh && Math.abs(r.lt - lt) < 0.005);
-  regras.push(dup ? { e: false, t: 'Já existe um lançamento desta placa, nesta hora, com estes litros.' }
-    : { e: f.placa && lt > 0 ? true : null, t: 'Sem lançamento repetido.' });
   return { bloqueios, regras, falhas: regras.filter(r => r.e === false) };
 }
+const encAnterior = bomba => Number(estado.bombas.find(x => x.numero === bomba)?.encerrante_anterior ?? 0);
 
 // ---------- Comunicação ----------
 async function atualizarEstado() {
   estado = await rpc('estado_posto');
-  gravar('estado', estado);
-  semAcesso = false;
+  semAcesso = false; semRede = false;
 }
 
-async function sincronizar() {
-  if (sincronizando || !conta) return;
-  sincronizando = true;
-  try {
-    const abs = fila.filter(f => f.tipo === 'abastecimento');
-    const chs = fila.filter(f => f.tipo === 'chegada');
-    const aceitos = new Set();
-    if (abs.length) {
-      const r = await rpc('registrar_abastecimentos', { p_registros: abs.map(f => f.dados) });
-      r.forEach(x => aceitos.add(x.uuid));
-      const exc = r.filter(x => x.status === 'Exceção').length;
-      aviso = { tipo: exc ? 'warn' : 'ok', texto: `${r.length} abastecimento(s) recebido(s)` + (exc ? `, ${exc} foi(ram) para o supervisor.` : '.') };
-    }
-    if (chs.length) (await rpc('registrar_chegadas', { p_registros: chs.map(f => f.dados) })).forEach(x => aceitos.add(x.uuid));
-    fila = fila.filter(f => !aceitos.has(f.dados.uuid));
-    salvarFila();
-    await atualizarEstado();
-    online = true; erroSync = null;
-  } catch (e) {
-    if (e.semRede) online = false;
-    else if (e.semAcesso) semAcesso = true;
-    else erroSync = e.message;   // dado recusado pelo banco: fica na fila e aparece na barra
-  } finally {
-    sincronizando = false;
-    render();
-  }
+function tratarErro(e) {
+  if (e.frentistaSaiu) { login = null; gravar('frentistaLogin', null); aviso = { tipo: 'warn', texto: e.message }; }
+  else if (e.semAcesso) semAcesso = true;
+  else aviso = { tipo: 'warn', texto: e.semRede ? 'Sem internet. Nada foi enviado: confira a conexão e tente de novo.' : e.message };
+}
+
+async function executar(acao) {
+  if (enviando) return;
+  if (!navigator.onLine) { aviso = { tipo: 'warn', texto: 'Sem internet. Conecte e tente de novo.' }; render(); return; }
+  enviando = true; render();
+  try { await acao(); } catch (e) { tratarErro(e); } finally { enviando = false; render(); conteudo.scrollTop = 0; }
 }
 
 // ---------- Telas ----------
-function campoFrentista() {
-  return `<div class="field quem"><label class="lbl" for="f-frentista">Quem está lançando?</label>
-    <select id="f-frentista"><option value="">Escolha seu nome…</option>${estado.frentistas.map(f =>
-      `<option value="${f.id}" ${f.id === frentistaId ? 'selected' : ''}>${esc(f.nome)}</option>`).join('')}</select></div>`;
+const avisoHtml = () => aviso ? `<div class="toast ${aviso.tipo}" role="status">${esc(aviso.texto)}</div>` : '';
+const botaoEnviar = (acao, texto, pode, classe = '') =>
+  `<button class="btn ${classe}" type="button" data-acao="${acao}" ${pode && !enviando ? '' : 'disabled'}>${enviando ? 'Enviando…' : texto}</button>`;
+
+function blocoFotos(lista, dono, minimo = 0, maximo = MAX_FOTOS) {
+  return `<div class="field"><span class="lbl">${maximo === 1 ? 'Foto' : 'Fotos'}${minimo ? ' (obrigatória)' : ' (opcional)'}</span>
+    <div class="fotos">${lista.map((f, i) => `<figure><img src="${f.previa}" alt="Foto ${i + 1}"><button type="button" class="tirar" data-tirar="${dono}" data-i="${i}" aria-label="Remover foto">×</button></figure>`).join('')}
+      ${lista.length < maximo ? `<button type="button" class="nova-foto" data-foto="${dono}">+ Tirar foto</button>` : ''}</div></div>`;
 }
 
-function barraSync() {
-  const el = $('sync');
-  const n = fila.length;
-  el.hidden = !conta || (online && !n && !erroSync);
-  el.className = 'sync' + (online ? '' : ' offline');
-  el.innerHTML = `<span>${!online ? 'Sem internet. ' : ''}${n ? `${n} registro(s) guardado(s) no celular.` : ''}${erroSync ? ` ${esc(erroSync)}` : ''}</span>
-    ${n ? `<button class="btn small ghost" type="button" data-acao="sync">${sincronizando ? 'Enviando…' : 'Enviar agora'}</button>` : ''}`;
-}
-
-function telaLogin() {
+function telaGoogle() {
   return `<div class="centro">
-    <h1>Entrar</h1>
-    <p class="hint">Entre uma vez com a conta Google do posto. O celular fica conectado; depois, a cada lançamento, cada frentista escolhe o próprio nome.</p>
-    ${aviso ? `<div class="toast ${aviso.tipo}">${esc(aviso.texto)}</div>` : ''}
+    <h1>Celular do posto</h1>
+    <p class="hint">Entre uma vez com a conta Google do posto. Depois, cada frentista entra com o próprio nome e PIN.</p>
+    ${avisoHtml()}
     <button class="btn" type="button" data-acao="google">Entrar com Google</button></div>`;
 }
 
@@ -134,35 +99,63 @@ function telaSemAcesso() {
   return `<div class="centro">
     <h1>Conta sem acesso</h1>
     <p>A conta <b>${esc(conta)}</b> ainda não foi liberada.</p>
-    <p class="hint">Peça ao supervisor para cadastrar este e-mail em "Acessos" no painel, como "Celular do posto". Depois toque em tentar de novo.</p>
+    <p class="hint">Peça ao supervisor para cadastrar este e-mail em "Acessos" no painel, como "Celular do posto".</p>
     <button class="btn" type="button" data-acao="tentar">Tentar de novo</button>
-    <button class="btn ghost" type="button" data-acao="trocar">Entrar com outra conta</button></div>`;
+    <button class="btn ghost" type="button" data-acao="trocar-google">Entrar com outra conta</button></div>`;
+}
+
+function telaSemRede() {
+  return `<div class="centro"><h1>Sem internet</h1><p>O app precisa de internet para funcionar.</p>
+    <button class="btn" type="button" data-acao="tentar">Tentar de novo</button></div>`;
+}
+
+function telaLoginFrentista() {
+  const lista = estado.frentistas;
+  if (!escolhido) {
+    return `<div class="centro login">
+      <h1>Quem está no posto?</h1>
+      ${avisoHtml()}
+      <div class="nomes">${lista.length ? lista.map(f => `<button type="button" data-frentista="${f.id}" ${f.tem_pin ? '' : 'disabled'}>
+        <b>${esc(f.nome)}</b>${f.tem_pin ? '' : '<small>sem PIN: peça ao supervisor</small>'}</button>`).join('')
+        : '<p class="hint">Nenhum frentista cadastrado. O supervisor cadastra no painel.</p>'}</div>
+      <button class="link" type="button" data-acao="trocar-google">Sair da conta Google do celular</button></div>`;
+  }
+  const f = lista.find(x => x.id === escolhido);
+  return `<div class="centro login">
+    <h1>${esc(f?.nome || '')}</h1>
+    <p class="hint">Digite seu PIN de 4 números.</p>
+    ${avisoHtml()}
+    <div class="pin" aria-label="PIN digitado">${[0, 1, 2, 3].map(i => `<span class="${i < pin.length ? 'cheio' : ''}"></span>`).join('')}</div>
+    <div class="teclado">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => `<button type="button" data-tecla="${n}">${n}</button>`).join('')}
+      <button type="button" data-tecla="voltar" aria-label="Voltar">‹</button><button type="button" data-tecla="0">0</button><button type="button" data-tecla="apagar" aria-label="Apagar">⌫</button></div>
+    ${enviando ? '<p class="hint">Conferindo…</p>' : ''}</div>`;
 }
 
 function telaAbastecer() {
-  if (!estado.bombas.length || !estado.veiculos.length) return '<p class="hint">Cadastros ainda não carregados. Peça ao supervisor para cadastrar bombas e veículos.</p>';
+  if (!estado.bombas.length) return '<p class="hint">Nenhuma bomba cadastrada. Peça ao supervisor.</p>';
   const c = conferir(form);
   const ea = encAnterior(form.bomba);
   const enc = parseNum(form.enc);
   const falha = c.falhas.length > 0;
+  const semDesconto = form.desconto === false;
   const pode = !c.bloqueios.length && (!falha || form.obs.trim().length >= 5);
   const v = estado.veiculos.find(x => x.placa === form.placa);
   return `
-    ${aviso ? `<div class="toast ${aviso.tipo}" role="status">${esc(aviso.texto)}</div>` : ''}
-    ${campoFrentista()}
+    ${avisoHtml()}
     <div class="field"><span class="lbl">Bomba</span><div class="bombas">
       ${estado.bombas.map(b => `<button type="button" data-bomba="${b.numero}" aria-pressed="${b.numero === form.bomba}"><b>${b.numero}</b><small>${esc(b.tanque)}</small></button>`).join('')}
     </div></div>
     <div class="row2">
       <div class="field"><label class="lbl" for="f-placa">Placa</label>
-        <select id="f-placa"><option value="">Escolha…</option>${estado.veiculos.map(x => `<option ${x.placa === form.placa ? 'selected' : ''}>${esc(x.placa)}</option>`).join('')}</select></div>
+        <select id="f-placa"><option value="">Escolha…</option>${estado.veiculos.map(x => `<option ${x.placa === form.placa ? 'selected' : ''}>${esc(x.placa)}</option>`).join('')}</select>
+        <button class="link esq" type="button" data-acao="novo-veiculo">+ Placa não está na lista</button></div>
       <div class="field"><label class="lbl" for="f-hora">Hora</label><input id="f-hora" type="time" value="${esc(form.hora)}"></div>
     </div>
     <div class="field"><label class="lbl" for="f-motorista">Motorista</label>
       <select id="f-motorista"><option value="">Escolha…</option>${estado.motoristas.map(m => `<option ${m === form.motorista ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>
-      ${v?.motorista_sugerido ? '<span class="hint">Sugerido: o último motorista que abasteceu esta placa.</span>' : ''}</div>
+      <button class="link esq" type="button" data-acao="novo-motorista">+ Motorista não está na lista</button></div>
     <div class="field"><label class="lbl" for="f-km">KM do painel</label><input id="f-km" class="num" inputmode="numeric" value="${esc(form.km)}">
-      ${v ? `<span class="hint">Último desta placa: ${kmAnterior(form.placa) == null ? 'sem registro' : nf(kmAnterior(form.placa), 0) + ' km'}</span>` : ''}</div>
+      ${v ? `<span class="hint">Último desta placa: ${v.km_anterior == null ? 'sem registro' : nf(v.km_anterior, 0) + ' km'}</span>` : ''}</div>
     <div class="row2">
       <div class="field"><label class="lbl" for="f-litros">Litros (visor)</label><input id="f-litros" class="num" inputmode="decimal" value="${esc(form.litros)}"></div>
       <div class="field"><label class="lbl" for="f-enc">Encerrante final</label><input id="f-enc" class="num" inputmode="decimal" value="${esc(form.enc)}"></div>
@@ -172,37 +165,74 @@ function telaAbastecer() {
     <ul class="checks">${c.regras.map(r => `<li class="${r.e === true ? 'ok' : r.e === false ? 'falha' : ''}">${esc(r.t)}</li>`).join('')}</ul>
     ${falha ? `<div class="field"><label class="lbl" for="f-obs">O que aconteceu? (vai para o supervisor)</label>
       <textarea id="f-obs" rows="2" maxlength="500">${esc(form.obs)}</textarea></div>` : ''}
+    <div class="field desconto"><span class="lbl">O diesel foi descontado do motorista?</span>
+      <div class="opcoes">
+        <button type="button" data-desconto="sim" aria-pressed="${form.desconto === true}">Sim, descontado</button>
+        <button type="button" data-desconto="nao" aria-pressed="${semDesconto}">Não</button>
+      </div>
+      ${semDesconto ? `<label class="lbl" for="f-just">Por que não foi descontado? (o supervisor precisa autorizar)</label>
+        <textarea id="f-just" rows="2" maxlength="500">${esc(form.justificativa)}</textarea>` : ''}</div>
     ${c.bloqueios.length ? `<p class="hint">${c.bloqueios.map(esc).join(' ')}</p>` : ''}
-    <button class="btn ${falha ? 'warn' : ''}" type="button" data-acao="enviar" ${pode ? '' : 'disabled'}>${falha ? 'Enviar para o supervisor' : 'Enviar abastecimento'}</button>`;
+    ${botaoEnviar('enviar', semDesconto ? 'Pedir autorização ao supervisor' : falha ? 'Enviar para o supervisor' : 'Enviar abastecimento', pode,
+      semDesconto || falha ? 'warn' : '')}`;
+}
+
+function telaNovoVeiculo() {
+  const f = novoVeiculo;
+  const pode = /^[A-Z]{3}\d[A-Z0-9]\d{2}$/.test(f.placa.toUpperCase().replace(/[^A-Z0-9]/g, '')) && parseNum(f.capacidade) > 0 && f.fotos.length === 1;
+  return `<h2>Cadastrar veículo</h2>
+    <p class="hint">Só para placa que ainda não existe. Depois de cadastrado, só o supervisor altera.</p>
+    ${avisoHtml()}
+    <div class="field"><label class="lbl" for="v-placa">Placa</label><input id="v-placa" maxlength="8" autocapitalize="characters" value="${esc(f.placa)}"></div>
+    <div class="row2">
+      <div class="field"><label class="lbl" for="v-cap">Tanque do veículo (L)</label><input id="v-cap" class="num" inputmode="decimal" value="${esc(f.capacidade)}"></div>
+      <div class="field"><label class="lbl" for="v-km">KM atual</label><input id="v-km" class="num" inputmode="numeric" value="${esc(f.km)}"></div>
+    </div>
+    ${f.fotos.length ? '' : '<p class="hint">Tire uma foto do caminhão mostrando a placa.</p>'}
+    ${blocoFotos(f.fotos, 'veiculo', 1, 1)}
+    ${botaoEnviar('salvar-veiculo', 'Cadastrar veículo', pode)}
+    <button class="btn ghost" type="button" data-acao="voltar">Voltar</button>`;
+}
+
+function telaNovoMotorista() {
+  const f = novoMotorista;
+  const cpf = f.cpf.replace(/\D/g, '');
+  const pode = f.nome.trim().split(/\s+/).length >= 2 && cpf.length === 11;
+  return `<h2>Cadastrar motorista</h2>
+    <p class="hint">Só para motorista que ainda não existe. Depois de cadastrado, só o supervisor altera.</p>
+    ${avisoHtml()}
+    <div class="field"><label class="lbl" for="m-nome">Nome completo</label><input id="m-nome" maxlength="120" autocapitalize="characters" value="${esc(f.nome)}"></div>
+    <div class="field"><label class="lbl" for="m-cpf">CPF</label><input id="m-cpf" class="num" inputmode="numeric" maxlength="14" value="${esc(f.cpf)}"></div>
+    ${botaoEnviar('salvar-motorista', 'Cadastrar motorista', pode)}
+    <button class="btn ghost" type="button" data-acao="voltar">Voltar</button>`;
 }
 
 function telaTurno() {
-  const pend = fila.filter(f => f.tipo === 'abastecimento').map(f => ({ ...f.dados, status: 'Pendente', problemas: [], frentista: nomeFrentista(f.dados.frentista_id) }));
-  const lista = [...pend, ...estado.hoje].sort((a, b) => String(b.data_hora).localeCompare(String(a.data_hora)));
+  const lista = [...estado.hoje].sort((a, b) => String(b.data_hora).localeCompare(String(a.data_hora)));
   const n = s => estado.hoje.filter(r => s.includes(r.status)).length;
   return `
     <div class="resumo">
       <div><b>${n(['Lançado'])}</b><span>Lançados no KMM</span></div>
-      <div><b>${n(['Pronto', 'Em lote']) + pend.length}</b><span>Aguardando</span></div>
-      <div><b>${n(['Exceção', 'Erro'])}</b><span>Com o supervisor</span></div>
+      <div><b>${n(['Pronto', 'Em lote'])}</b><span>Aguardando o KMM</span></div>
+      <div><b>${n(['Exceção', 'Erro', 'Aguardando autorização'])}</b><span>Com o supervisor</span></div>
     </div>
     <div class="secao">Hoje</div>
     ${lista.length ? lista.map(r => `<div class="reg">
-      <div class="linha1"><span class="placa">${esc(r.placa)}</span><span class="pill ${classeStatus(r.status)}">${r.status === 'Pendente' ? 'Guardado no celular' : esc(r.status)}</span></div>
-      <div class="det">${hhmm(r.data_hora)} · ${esc(r.motorista)} · Bomba ${esc(r.bomba)}${r.id ? ` · #${r.id}` : ''}</div>
-      <div class="det">${nf(r.litros)} L · ${nf(r.km, 0)} km · lançado por ${esc(r.frentista || '')}</div>
+      <div class="linha1"><span class="placa">${esc(r.placa)}</span><span class="pill ${classeStatus(r.status)}">${esc(r.status)}</span></div>
+      <div class="det">${hhmm(r.data_hora)} · ${esc(r.motorista)} · Bomba ${esc(r.bomba)} · #${r.id}</div>
+      <div class="det">${nf(r.litros)} L · ${nf(r.km, 0)} km · ${esc(r.frentista || '')}${r.desconto_confirmado ? '' : ' · sem desconto'}</div>
       ${r.problemas?.length ? `<ul>${r.problemas.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
     </div>`).join('') : '<p class="hint">Nenhum abastecimento hoje.</p>'}
-    <p class="hint">Atualizado às ${hhmm(estado.gerado_em)}. Conta: ${esc(conta)}</p>`;
+    <button class="btn ghost" type="button" data-acao="atualizar">Atualizar</button>
+    <p class="hint">Atualizado às ${hhmm(estado.gerado_em)}.</p>`;
 }
 
 function telaChegada() {
   const f = chegada, l = parseNum(f.litros), sub = parseNum(f.depois) - parseNum(f.antes);
   const okRegua = l > 0 && sub > 0 && Math.abs(sub - l) <= LIM.tolTanque;
-  const pode = frentistaValido() && f.tanque && f.nf.trim() && l > 0 && /^\d{2}:\d{2}$/.test(f.hora);
+  const pode = f.tanque && f.nf.trim() && l > 0 && /^\d{2}:\d{2}$/.test(f.hora);
   return `
-    ${aviso ? `<div class="toast ${aviso.tipo}" role="status">${esc(aviso.texto)}</div>` : ''}
-    ${campoFrentista()}
+    ${avisoHtml()}
     <div class="row2">
       <div class="field"><label class="lbl" for="c-tanque">Tanque</label><select id="c-tanque">${estado.tanques.map(t => `<option ${t.tanque === f.tanque ? 'selected' : ''}>${esc(t.tanque)}</option>`).join('')}</select></div>
       <div class="field"><label class="lbl" for="c-hora">Hora</label><input id="c-hora" type="time" value="${esc(f.hora)}"></div>
@@ -225,24 +255,21 @@ function telaChegada() {
       <div class="field"><label class="lbl" for="c-motorista">Motorista</label><input id="c-motorista" maxlength="120" value="${esc(f.motorista)}"></div>
       <div class="field"><label class="lbl" for="c-cpf">CPF</label><input id="c-cpf" class="num" inputmode="numeric" maxlength="14" value="${esc(f.cpf)}"></div>
     </div>
-    <button class="btn" type="button" data-acao="chegada" ${pode ? '' : 'disabled'}>Registrar chegada</button>`;
+    ${blocoFotos(fotosChegada, 'chegada')}
+    ${botaoEnviar('chegada', 'Registrar chegada', pode)}`;
 }
 
 function telaFechar() {
-  const pend = fila.length;
   if (estado.tanques.some(t => t.fechado)) {
     return `<div class="toast ok">O dia já foi fechado.</div>${estado.tanques.map(t => `<div class="tanque"><h3>${esc(t.tanque)}</h3>
       <div class="medidor"><span>Esperado</span><span class="v">${nf(t.fechado.saldo_calculado, 0)} L</span>
       <span>Medido</span><span class="v">${nf(t.fechado.saldo_medido, 0)} L</span>
       <span class="tot">Diferença</span><span class="v tot">${nf(t.fechado.diferenca, 0)} L</span></div></div>`).join('')}`;
   }
-  const completos = estado.tanques.every(t => !Number.isNaN(parseNum(medidos[t.tanque])));
+  const completos = estado.tanques.length && estado.tanques.every(t => !Number.isNaN(parseNum(medidos[t.tanque])));
   return `
-    ${aviso ? `<div class="toast ${aviso.tipo}" role="status">${esc(aviso.texto)}</div>` : ''}
-    ${campoFrentista()}
+    ${avisoHtml()}
     <p class="hint">Meça os tanques no fim do turno. O sistema compara com o que entrou e saiu pelas bombas.</p>
-    ${pend ? `<div class="toast warn">Há ${pend} registro(s) guardado(s) no celular. Envie antes de fechar, senão a conta fica errada.</div>` : ''}
-    ${!online ? '<div class="toast warn">Sem internet. O fechamento precisa de conexão.</div>' : ''}
     ${estado.tanques.map(t => {
       const m = parseNum(medidos[t.tanque]), dif = m - t.saldo_calculado;
       return `<div class="tanque"><h3>${esc(t.tanque)}</h3>
@@ -257,125 +284,194 @@ function telaFechar() {
         ${!Number.isNaN(m) ? `<ul class="checks"><li class="${Math.abs(dif) <= LIM.tolTanque ? 'ok' : 'falha'}">${Math.abs(dif) <= LIM.tolTanque
           ? `Diferença de ${nf(dif, 0)} L, dentro da tolerância.` : `Diferença de ${nf(dif, 0)} L. O supervisor vai receber um alerta.`}</li></ul>` : ''}
       </div>`; }).join('')}
-    <button class="btn" type="button" data-acao="fechar" ${completos && !pend && online && frentistaValido() ? '' : 'disabled'}>Fechar turno</button>`;
+    ${blocoFotos(fotosFechamento, 'fechamento')}
+    ${botaoEnviar('fechar', 'Fechar turno', completos)}`;
 }
 
 function render(manterFoco) {
   const foco = manterFoco && document.activeElement?.id;
   const pos = foco && document.activeElement.selectionStart;
-  barraSync();
-  const pronto = conta && estado && !semAcesso;
-  $('abas').hidden = !pronto;
-  $('sair').hidden = !conta;
-  $('subtitulo').textContent = pronto && frentistaValido() ? nomeFrentista(frentistaId) : '';
-  if (!conta) conteudo.innerHTML = telaLogin();
-  else if (semAcesso) conteudo.innerHTML = telaSemAcesso();
-  else if (!estado) conteudo.innerHTML = '<p class="hint">Sem dados do posto ainda. Conecte à internet uma vez para baixar os cadastros.</p>';
-  else conteudo.innerHTML = { abastecer: telaAbastecer, turno: telaTurno, chegada: telaChegada, fechar: telaFechar }[aba]();
+  const logado = conta && estado && !semAcesso && login;
+  $('abas').hidden = !logado || !!tela;
+  $('sair').hidden = !logado;
+  $('subtitulo').textContent = logado ? login.nome : '';
+  let html;
+  if (!conta) html = telaGoogle();
+  else if (semAcesso) html = telaSemAcesso();
+  else if (!estado) html = semRede ? telaSemRede() : '<p class="hint">Carregando…</p>';
+  else if (!login) html = telaLoginFrentista();
+  else if (tela === 'veiculo') html = telaNovoVeiculo();
+  else if (tela === 'motorista') html = telaNovoMotorista();
+  else html = { abastecer: telaAbastecer, turno: telaTurno, chegada: telaChegada, fechar: telaFechar }[aba]();
+  conteudo.innerHTML = html;
   document.querySelectorAll('#abas button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === aba)));
   if (foco) { const el = $(foco); if (el) { el.focus(); try { if (pos != null) el.setSelectionRange(pos, pos); } catch { /* campo sem seleção */ } } }
 }
 
 // ---------- Eventos ----------
-const mapaForm = { 'f-placa': 'placa', 'f-motorista': 'motorista', 'f-hora': 'hora', 'f-km': 'km', 'f-litros': 'litros', 'f-enc': 'enc', 'f-obs': 'obs' };
+const mapaForm = { 'f-placa': 'placa', 'f-motorista': 'motorista', 'f-hora': 'hora', 'f-km': 'km', 'f-litros': 'litros', 'f-enc': 'enc',
+  'f-obs': 'obs', 'f-just': 'justificativa' };
 const mapaChegada = { 'c-tanque': 'tanque', 'c-hora': 'hora', 'c-nf': 'nf', 'c-litros': 'litros', 'c-valor': 'valor', 'c-antes': 'antes',
   'c-depois': 'depois', 'c-placa': 'placa', 'c-carreta': 'carreta', 'c-motorista': 'motorista', 'c-cpf': 'cpf' };
+const mapaVeiculo = { 'v-placa': 'placa', 'v-cap': 'capacidade', 'v-km': 'km' };
+const mapaMotorista = { 'm-nome': 'nome', 'm-cpf': 'cpf' };
 
 conteudo.addEventListener('input', e => {
   const id = e.target.id;
-  if (id === 'f-frentista') { frentistaId = e.target.value ? Number(e.target.value) : null; gravar('frentista', frentistaId); }
-  else if (mapaForm[id]) {
+  if (mapaForm[id]) {
     form[mapaForm[id]] = e.target.value;
     if (id === 'f-placa') form.motorista = estado.veiculos.find(v => v.placa === form.placa)?.motorista_sugerido || '';
     aviso = null;
   } else if (mapaChegada[id]) chegada[mapaChegada[id]] = e.target.value;
+  else if (mapaVeiculo[id]) novoVeiculo[mapaVeiculo[id]] = e.target.value;
+  else if (mapaMotorista[id]) novoMotorista[mapaMotorista[id]] = e.target.value;
   else if (e.target.dataset.tanque) medidos[e.target.dataset.tanque] = e.target.value;
   else return;
   render(e.target.tagName !== 'SELECT');
 });
 
 conteudo.addEventListener('click', async e => {
-  const bomba = e.target.closest('[data-bomba]');
-  if (bomba) { form.bomba = Number(bomba.dataset.bomba); aviso = null; render(); return; }
-  const acao = e.target.closest('[data-acao]')?.dataset.acao;
+  const alvo = sel => e.target.closest(sel);
+  if (alvo('[data-bomba]')) { form.bomba = Number(alvo('[data-bomba]').dataset.bomba); aviso = null; return render(); }
+  if (alvo('[data-desconto]')) { form.desconto = alvo('[data-desconto]').dataset.desconto === 'sim'; return render(); }
+  if (alvo('[data-frentista]')) { escolhido = Number(alvo('[data-frentista]').dataset.frentista); pin = ''; aviso = null; return render(); }
+  if (alvo('[data-tecla]')) return teclarPin(alvo('[data-tecla]').dataset.tecla);
+  if (alvo('[data-foto]')) return adicionarFoto(alvo('[data-foto]').dataset.foto);
+  if (alvo('[data-tirar]')) {
+    const b = alvo('[data-tirar]'); const lista = listaDeFotos(b.dataset.tirar);
+    URL.revokeObjectURL(lista[Number(b.dataset.i)]?.previa); lista.splice(Number(b.dataset.i), 1); return render();
+  }
+  const acao = alvo('[data-acao]')?.dataset.acao;
   if (acao === 'google') { try { await entrarComGoogle(); } catch (err) { aviso = { tipo: 'warn', texto: err.message }; render(); } }
   if (acao === 'tentar') await carregar();
-  if (acao === 'trocar') { await sair(); conta = null; semAcesso = false; render(); }
-  if (acao === 'enviar') enviarAbastecimento();
-  if (acao === 'chegada') enviarChegada();
-  if (acao === 'fechar') await fecharTurno();
-});
-$('sync').addEventListener('click', e => { if (e.target.closest('[data-acao="sync"]')) { render(); sincronizar(); } });
-$('abas').addEventListener('click', e => {
-  const b = e.target.closest('button'); if (!b) return;
-  aba = b.dataset.aba; aviso = null; render(); conteudo.scrollTop = 0;
-  if (navigator.onLine) sincronizar();
-});
-$('sair').addEventListener('click', async () => {
-  if (fila.length) { aviso = { tipo: 'warn', texto: 'Envie os registros guardados antes de sair da conta.' }; aba = 'turno'; render(); return; }
-  await sair(); conta = null; estado = null; gravar('estado', null); render();
+  if (acao === 'trocar-google') { await sair(); conta = null; estado = null; semAcesso = false; login = null; gravar('frentistaLogin', null); render(); }
+  if (acao === 'novo-veiculo') { tela = 'veiculo'; novoVeiculo = { placa: '', capacidade: '', km: '', fotos: [] }; aviso = null; render(); }
+  if (acao === 'novo-motorista') { tela = 'motorista'; novoMotorista = { nome: '', cpf: '' }; aviso = null; render(); }
+  if (acao === 'voltar') { tela = null; aviso = null; render(); }
+  if (acao === 'atualizar') await executar(atualizarEstado);
+  if (acao === 'enviar') await executar(enviarAbastecimento);
+  if (acao === 'chegada') await executar(enviarChegada);
+  if (acao === 'fechar') await executar(fecharTurno);
+  if (acao === 'salvar-veiculo') await executar(salvarVeiculo);
+  if (acao === 'salvar-motorista') await executar(salvarMotorista);
 });
 
-function enviarAbastecimento() {
+$('abas').addEventListener('click', async e => {
+  const b = e.target.closest('button'); if (!b) return;
+  aba = b.dataset.aba; aviso = null; render(); conteudo.scrollTop = 0;
+  try { await atualizarEstado(); } catch (err) { tratarErro(err); }
+  render();
+});
+
+$('sair').addEventListener('click', async () => {
+  try { if (login) await rpc('sair_frentista', { p_sessao: login.sessao }); } catch { /* sai mesmo sem rede */ }
+  login = null; gravar('frentistaLogin', null); escolhido = null; pin = ''; aviso = null; tela = null;
+  render();
+});
+
+const listaDeFotos = dono => ({ chegada: fotosChegada, fechamento: fotosFechamento, veiculo: novoVeiculo?.fotos }[dono]);
+
+async function adicionarFoto(dono) {
+  try {
+    const f = await tirarFoto();
+    if (f) { const lista = listaDeFotos(dono); if (dono === 'veiculo') lista.length = 0; lista.push(f); }
+  } catch (err) { aviso = { tipo: 'warn', texto: err.message }; }
+  render();
+}
+
+async function teclarPin(tecla) {
+  if (enviando) return;
+  if (tecla === 'voltar') { escolhido = null; pin = ''; aviso = null; return render(); }
+  if (tecla === 'apagar') { pin = pin.slice(0, -1); return render(); }
+  if (pin.length >= 4) return;
+  pin += tecla; aviso = null; render();
+  if (pin.length < 4) return;
+  await executar(async () => {
+    const r = await rpc('entrar_frentista', { p_frentista_id: escolhido, p_pin: pin });
+    pin = '';
+    if (!r.ok) { aviso = { tipo: 'warn', texto: r.erro }; return; }
+    login = { sessao: r.sessao, id: r.frentista.id, nome: r.frentista.nome };
+    gravar('frentistaLogin', login);
+    escolhido = null; aba = 'abastecer'; form = novoForm(); chegada = novaChegada();
+    aviso = { tipo: 'ok', texto: `Olá, ${r.frentista.nome.split(' ')[0]}.` };
+  });
+}
+
+async function enviarAbastecimento() {
   const c = conferir(form);
   if (c.bloqueios.length) return;
   const dados = {
-    uuid: crypto.randomUUID(), data_hora: `${hojeISO()}T${form.hora}:00`, placa: form.placa, motorista: form.motorista,
+    uuid: form.uuid || (form.uuid = crypto.randomUUID()), data_hora: `${hojeISO()}T${form.hora}:00`, placa: form.placa, motorista: form.motorista,
     km: Math.round(parseNum(form.km)), litros: parseNum(form.litros), encerrante: parseNum(form.enc), bomba: form.bomba,
-    frentista_id: frentistaId, obs: c.falhas.length ? form.obs.trim() : null,
+    obs: c.falhas.length ? form.obs.trim() : null, desconto: form.desconto, justificativa_desconto: form.desconto ? null : form.justificativa.trim(),
   };
-  fila.push({ tipo: 'abastecimento', dados, localOk: !c.falhas.length });
-  salvarFila();
-  aviso = c.falhas.length
-    ? { tipo: 'warn', texto: `Guardado: ${dados.placa}, ${nf(dados.litros)} L. Vai para o supervisor.` }
-    : { tipo: 'ok', texto: `Guardado: ${dados.placa}, ${nf(dados.litros)} L. Enviando…` };
+  const r = await rpc('registrar_abastecimento', { p_sessao: login.sessao, p_dados: dados });
+  aviso = r.status === 'Aguardando autorização' ? { tipo: 'warn', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: aguardando autorização do supervisor.` }
+    : r.status === 'Exceção' ? { tipo: 'warn', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: foi para o supervisor conferir.` }
+    : { tipo: 'ok', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: lançado.` };
   const b = form.bomba;
+  await atualizarEstado();
   form = novoForm(); form.bomba = b;
-  render(); conteudo.scrollTop = 0;
-  sincronizar();
 }
 
-function enviarChegada() {
+async function enviarChegada() {
   const f = chegada;
   const num = s => { const n = parseNum(s); return Number.isNaN(n) ? null : n; };
-  fila.push({ tipo: 'chegada', dados: {
-    uuid: crypto.randomUUID(), tanque: f.tanque, data_hora: `${hojeISO()}T${f.hora}:00`, nf: f.nf.trim(), litros: parseNum(f.litros),
+  const caminhos = await enviarFotos('chegada', fotosChegada);
+  await rpc('registrar_chegada', { p_sessao: login.sessao, p_fotos: caminhos, p_dados: {
+    uuid: f.uuid || (f.uuid = crypto.randomUUID()), tanque: f.tanque, data_hora: `${hojeISO()}T${f.hora}:00`, nf: f.nf.trim(), litros: parseNum(f.litros),
     valor_total: num(f.valor), regua_antes: num(f.antes), regua_depois: num(f.depois), placa_caminhao: f.placa || null,
-    placa_carreta: f.carreta || null, motorista: f.motorista || null, cpf: f.cpf || null, frentista_id: frentistaId } });
-  salvarFila();
-  aviso = { tipo: 'ok', texto: `Chegada da NF ${f.nf} guardada. Enviando…` };
+    placa_carreta: f.carreta || null, motorista: f.motorista || null, cpf: f.cpf || null } });
+  aviso = { tipo: 'ok', texto: `Chegada da NF ${f.nf} registrada${caminhos.length ? ` com ${caminhos.length} foto(s)` : ''}.` };
+  fotosChegada.forEach(x => URL.revokeObjectURL(x.previa)); fotosChegada = [];
   chegada = novaChegada();
-  render(); conteudo.scrollTop = 0;
-  sincronizar();
+  await atualizarEstado();
 }
 
 async function fecharTurno() {
   const valores = Object.fromEntries(estado.tanques.map(t => [t.tanque, parseNum(medidos[t.tanque])]));
-  try {
-    const r = await rpc('registrar_fechamento', { p_medidos: valores, p_frentista_id: frentistaId });
-    const alertas = r.filter(t => t.alerta).length;
-    aviso = { tipo: alertas ? 'warn' : 'ok', texto: alertas ? `Turno fechado. ${alertas} tanque(s) com diferença: o supervisor foi avisado.` : 'Turno fechado. Tudo bateu.' };
-    medidos = {};
-    await atualizarEstado();
-  } catch (e) { aviso = { tipo: 'warn', texto: e.message }; }
-  render();
+  const caminhos = await enviarFotos('fechamento', fotosFechamento);
+  const r = await rpc('registrar_fechamento', { p_sessao: login.sessao, p_medidos: valores, p_fotos: caminhos });
+  const alertas = r.filter(t => t.alerta).length;
+  aviso = { tipo: alertas ? 'warn' : 'ok', texto: alertas ? `Turno fechado. ${alertas} tanque(s) com diferença: o supervisor foi avisado.` : 'Turno fechado. Tudo bateu.' };
+  medidos = {}; fotosFechamento.forEach(x => URL.revokeObjectURL(x.previa)); fotosFechamento = [];
+  await atualizarEstado();
+}
+
+async function salvarVeiculo() {
+  const f = novoVeiculo;
+  const [caminho] = await enviarFotos('veiculo', f.fotos);
+  const r = await rpc('cadastrar_veiculo_app', { p_sessao: login.sessao, p_placa: f.placa, p_capacidade: parseNum(f.capacidade),
+    p_km: f.km ? Math.round(parseNum(f.km)) : null, p_foto: caminho });
+  await atualizarEstado();
+  form.placa = r.placa; tela = null;
+  aviso = { tipo: 'ok', texto: `Veículo ${r.placa} cadastrado.` };
+}
+
+async function salvarMotorista() {
+  const f = novoMotorista;
+  const r = await rpc('cadastrar_motorista_app', { p_sessao: login.sessao, p_nome: f.nome, p_cpf: f.cpf });
+  await atualizarEstado();
+  form.motorista = r.nome; tela = null;
+  aviso = { tipo: 'ok', texto: `Motorista ${r.nome} cadastrado.` };
 }
 
 // ---------- Início ----------
 async function carregar() {
   conta = await contaAtual();
+  aviso = null;
   if (conta) {
-    try { await atualizarEstado(); online = true; }
-    catch (e) { if (e.semAcesso) semAcesso = true; else if (e.semRede) online = false; else aviso = { tipo: 'warn', texto: e.message }; }
+    try { await atualizarEstado(); }
+    catch (e) { if (e.semAcesso) semAcesso = true; else if (e.semRede) semRede = true; else aviso = { tipo: 'warn', texto: e.message }; }
+    if (login && estado && !estado.frentistas.some(f => f.id === login.id)) { login = null; gravar('frentistaLogin', null); }
   }
   form = estado ? novoForm() : null;
   chegada = estado ? novaChegada() : null;
   render();
-  if (conta && fila.length) sincronizar();
 }
 
 aoVoltarDoLogin(erro => { if (erro) aviso = { tipo: 'warn', texto: erro.message }; carregar(); });
-supabase.auth.onAuthStateChange((evento) => { if (evento === 'SIGNED_IN' && !conta) carregar(); });
-window.addEventListener('online', () => sincronizar());
-setInterval(() => { if (conta && (fila.length || !online)) sincronizar(); }, 60_000);
+supabase.auth.onAuthStateChange(evento => { if (evento === 'SIGNED_IN' && !conta) carregar(); });
+window.addEventListener('online', () => { if (semRede) carregar(); });
+prepararAtualizacao();
 carregar();

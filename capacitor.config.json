@@ -5,5 +5,18 @@
   "android": {
     "allowMixedContent": false,
     "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "CapacitorUpdater": {
+      "autoUpdate": false,
+      "appReadyTimeout": 15000,
+      "responseTimeout": 30,
+      "autoDeleteFailed": true,
+      "autoDeletePrevious": true,
+      "resetWhenUpdate": true,
+      "statsUrl": "",
+      "updateUrl": "",
+      "channelUrl": ""
+    }
   }
 }

@@ -55,3 +55,35 @@ html, body { height: 100%; }
 .centro h1 { font-size: 26px; }
 .quem { background: var(--accent-soft); border-radius: 12px; padding: 10px 12px; }
 .quem select { font-weight: 600; }
+
+/* Login do frentista */
+.login { text-align: center; }
+.nomes { display: grid; gap: 10px; }
+.nomes button { min-height: 60px; border-radius: 12px; border: 1.5px solid var(--line); background: var(--surface); cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.nomes b { font: 700 19px var(--font-display); }
+.nomes small { color: var(--muted); font-size: 12px; }
+.nomes button:disabled { opacity: .55; cursor: not-allowed; }
+.pin { display: flex; justify-content: center; gap: 16px; margin: 8px 0; }
+.pin span { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--muted); }
+.pin span.cheio { background: var(--accent); border-color: var(--accent); }
+.teclado { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 300px; margin: 0 auto; width: 100%; }
+.teclado button { min-height: 64px; border-radius: 14px; border: 1.5px solid var(--line); background: var(--surface); font: 600 26px var(--font-num); cursor: pointer; }
+.link.esq { align-self: flex-start; padding: 4px 0; font-size: 13.5px; }
+
+/* Desconto */
+.desconto { background: var(--surface); border: 1.5px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.opcoes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.opcoes button { min-height: 48px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--sunken); font-weight: 600; cursor: pointer; }
+.opcoes button[aria-pressed="true"]:first-child { background: var(--ok); border-color: var(--ok); color: #fff; }
+.opcoes button[aria-pressed="true"]:last-child { background: var(--warn); border-color: var(--warn); color: #fff; }
+
+/* Fotos */
+.fotos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.fotos figure { margin: 0; position: relative; aspect-ratio: 1; max-width: 100%; }
+.fotos img { width: 100%; height: 100%; object-fit: cover; border-radius: 10px; display: block; }
+.fotos .tirar { position: absolute; top: 4px; right: 4px; width: 30px; height: 30px; border-radius: 50%; border: 0;
+  background: rgb(0 0 0 / .6); color: #fff; font-size: 18px; cursor: pointer; }
+.nova-foto { aspect-ratio: 1; border-radius: 10px; border: 2px dashed var(--line); background: var(--surface); color: var(--accent);
+  font-weight: 600; cursor: pointer; }
+.pill.Aguardando-autorização { background: var(--accent-soft); color: var(--accent); }

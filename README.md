@@ -12,6 +12,10 @@ Para colocar no ar: [docs/CONFIGURAR.md](docs/CONFIGURAR.md).
 
 | Risco | Proteção |
 |---|---|
+| Frentista lançando em nome de outro | Cada um entra com nome + PIN de 4 números; 5 erros bloqueiam por 15 minutos; o PIN fica guardado só como hash, nem o supervisor vê |
+| Lançamento sem desconto do motorista | Só entra com justificativa e fica parado até o supervisor autorizar |
+| Supervisor mexendo onde não deve | Só gerencia celulares, frentistas e cadastros; administradores só o dono do projeto altera; ações de administradores não aparecem para ele na auditoria |
+| Foto trocada depois | Fotos ficam num bucket privado, só leitura para o painel, sem permissão de alterar ou apagar |
 | Conta Google qualquer tentar entrar | Só e-mails liberados em **Acessos** veem ou gravam algo (RLS em todas as tabelas). Só vale login Google |
 | Celular perdido | Supervisor bloqueia a conta em Acessos; o acesso cai na próxima tentativa |
 | Celular gravando direto no banco ou mexendo em cadastro | O papel "posto" não tem permissão em tabela nenhuma; só nas funções de registrar, que conferem tudo |

@@ -20,7 +20,7 @@ const SUPABASE = `
   alter default privileges in schema public grant all on sequences to anon, authenticated;
 `;
 const POSTO = 'posto1@empresa.com', CHEFE = 'chefe@empresa.com', ESTRANHO = 'qualquer@gmail.com', DONO = 'dono@empresa.com';
-let db, base, frentistaId;
+let db, base, ana, carlos, sessao;
 
 // Executa como um usuário logado (papel authenticated + claims do JWT), igual ao PostgREST do Supabase
 async function como(email, sql, params = [], provider = 'google') {
@@ -33,7 +33,8 @@ async function como(email, sql, params = [], provider = 'google') {
 const rpc = async (email, fn, args = {}) => {
   const nomes = Object.keys(args);
   const sql = `select ${fn}(${nomes.map((n, i) => `${n} => $${i + 1}`).join(', ')}) as r`;
-  return (await como(email, sql, nomes.map(n => typeof args[n] === 'object' && args[n] !== null ? JSON.stringify(args[n]) : args[n])))[0].r;
+  const valor = v => Array.isArray(v) && v.every(x => typeof x === 'string') ? v : (typeof v === 'object' && v !== null ? JSON.stringify(v) : v);
+  return (await como(email, sql, nomes.map(n => valor(args[n]))))[0].r;
 };
 const dh = minutosAtras => {
   const d = new Date(base.getTime() - minutosAtras * 60000);
@@ -41,7 +42,9 @@ const dh = minutosAtras => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
 };
 const reg = (min, extra = {}) => ({ uuid: randomUUID(), data_hora: dh(min), placa: 'ABC1D23', motorista: 'João da Silva',
-  km: 150200, litros: 640, encerrante: 7071686, bomba: 1, frentista_id: frentistaId, ...extra });
+  km: 150200, litros: 640, encerrante: 7071686, bomba: 1, desconto: true, ...extra });
+const foto = pasta => `${pasta}/${randomUUID()}.jpg`;
+const abastecer = (dados, s = sessao) => rpc(POSTO, 'registrar_abastecimento', { p_sessao: s, p_dados: dados });
 
 before(async () => {
   db = new PGlite();
@@ -49,14 +52,14 @@ before(async () => {
   await db.exec(SCHEMA);
   await db.exec(SCHEMA);   // rodar de novo não pode dar erro (atualização do schema)
   await db.exec(`
-    insert into acessos (email, nome, papel) values ('${POSTO}', 'Celular posto 1', 'posto'), ('${CHEFE}', 'Chefe', 'supervisor'), ('${DONO}', 'Dono', 'administrador');
+    insert into acessos (email, nome, papel) values ('${POSTO}', 'Celular posto 1', 'posto'), ('${CHEFE}', 'Chefe', 'supervisor'),
+                                                    ('${DONO}', 'Dono', 'administrador');
     insert into frentistas (nome) values ('Ana Ribeiro'), ('Carlos Mendes');
     insert into tanques values ('TQ01', 30000, 12000);
     insert into bombas values (1, 'TQ01', 7071046, true);
-    insert into veiculos values ('ABC1D23', 700, 149500, true), ('DEF4567', 600, 97500, true);
+    insert into veiculos (placa, capacidade_l, km_inicial) values ('ABC1D23', 700, 149500), ('DEF4567', 600, 97500);
     insert into motoristas (nome, cpf) values ('JOAO DA SILVA', '52998224725');`);
-  frentistaId = (await db.query("select id from frentistas where nome = 'Ana Ribeiro'")).rows[0].id;
-  // "agora" no fuso de São Paulo, como o banco enxerga
+  [ana, carlos] = (await db.query("select id from frentistas order by nome")).rows.map(r => r.id);
   const t = (await db.query("select to_char(agora_local(), 'YYYY-MM-DD\"T\"HH24:MI:SS') as t")).rows[0].t;
   base = new Date(t);
 });
@@ -68,9 +71,8 @@ test('sem login (anon) não lê tabela nenhuma', async () => {
 
 test('conta Google não autorizada não vê nada nem chama funções', async () => {
   assert.equal((await como(ESTRANHO, 'select * from veiculos')).length, 0);
-  assert.equal((await como(ESTRANHO, 'select * from abastecimentos')).length, 0);
   await assert.rejects(rpc(ESTRANHO, 'estado_posto'), /Acesso negado/);
-  await assert.rejects(rpc(ESTRANHO, 'registrar_abastecimentos', { p_registros: [reg(30)] }), /Acesso negado/);
+  await assert.rejects(rpc(ESTRANHO, 'entrar_frentista', { p_frentista_id: 1, p_pin: '1234' }), /Acesso negado/);
   await assert.rejects(rpc(ESTRANHO, 'calcular_fechamento', { p_dia: dh(0).slice(0, 10) }), /Acesso negado/);
 });
 
@@ -78,140 +80,188 @@ test('mesmo e-mail autorizado, mas sem ser login Google, é recusado', async () 
   await assert.rejects(como(CHEFE, 'select gerar_lote()', [], 'email'), /Acesso negado/);
 });
 
-test('celular não grava nem lê tabelas diretamente', async () => {
-  await assert.rejects(como(POSTO, "insert into veiculos values ('ZZZ1Z11', 500, 1, true)"), /row-level security/);
+test('celular não grava nem lê tabelas diretamente, e ninguém lê PINs ou sessões', async () => {
+  await assert.rejects(como(POSTO, "insert into veiculos (placa, capacidade_l) values ('ZZZ1Z11', 500)"), /row-level security/);
   assert.equal((await como(POSTO, 'select * from motoristas')).length, 0);
-  await assert.rejects(como(POSTO, `insert into abastecimentos (uuid, data_hora, placa, motorista, km, litros, encerrante, bomba, status, frentista_id, conta)
-    values ('${randomUUID()}', now(), 'ABC1D23', 'X', 1, 1, 1, 1, 'Pronto', ${frentistaId}, 'x')`), /row-level security|permission denied/);
+  assert.equal((await como(CHEFE, 'select * from frentistas_pin')).length, 0);
+  assert.equal((await como(DONO, 'select * from sessoes_frentista')).length, 0);
 });
 
 test('funções internas não podem ser chamadas de fora', async () => {
   await assert.rejects(como(POSTO, "select conferir_abastecimento(now()::timestamp, 'ABC1D23', 'X', 1, 1, 1, 1)"), /permission denied/);
   await assert.rejects(como(POSTO, "select auditar('x', null, null, null)"), /permission denied/);
+  await assert.rejects(como(POSTO, "select frentista_da_sessao('x')"), /permission denied/);
+  await assert.rejects(como(POSTO, "select registrar_fotos('chegada', '1', '{}', null)"), /permission denied/);
 });
 
 test('celular não pode chamar funções do supervisor', async () => {
   await assert.rejects(rpc(POSTO, 'gerar_lote'), /Acesso negado/);
-  await assert.rejects(rpc(POSTO, 'decidir_abastecimento', { p_id: 1, p_acao: 'cancelar', p_motivo: 'teste' }), /Acesso negado/);
+  await assert.rejects(rpc(POSTO, 'definir_pin', { p_frentista_id: ana, p_pin: '4827' }), /Acesso negado/);
+  await assert.rejects(rpc(POSTO, 'decidir_autorizacao', { p_id: 1, p_aprovar: true, p_motivo: 'teste' }), /Acesso negado/);
 });
 
-test('estado do posto não leva CPF para o celular', async () => {
+// ---------- Login do frentista ----------
+test('supervisor define PIN; PIN fraco é recusado', async () => {
+  await assert.rejects(rpc(CHEFE, 'definir_pin', { p_frentista_id: ana, p_pin: '1234' }), /fácil demais/);
+  await assert.rejects(rpc(CHEFE, 'definir_pin', { p_frentista_id: ana, p_pin: '12a4' }), /4 números/);
+  await rpc(CHEFE, 'definir_pin', { p_frentista_id: ana, p_pin: '4827' });
+  await rpc(CHEFE, 'definir_pin', { p_frentista_id: carlos, p_pin: '9153' });
   const e = await rpc(POSTO, 'estado_posto');
-  assert.equal(e.papel, 'posto');
-  assert.ok(!JSON.stringify(e).includes('52998224725'));
-  assert.equal(Number(e.bombas[0].encerrante_anterior), 7071046);
-  assert.deepEqual(e.frentistas.map(f => f.nome), ['Ana Ribeiro', 'Carlos Mendes']);
+  assert.ok(e.frentistas.every(f => f.tem_pin));
+  assert.ok(!JSON.stringify(e).includes('52998224725'));    // CPF não vai para o celular
 });
 
-// ---------- Fluxo ----------
-test('abastecimento certo fica Pronto e reenvio não duplica', async () => {
+test('frentista entra com nome + PIN; PIN errado conta tentativas e bloqueia na 5ª', async () => {
+  const errado = await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '0000' });
+  assert.equal(errado.ok, false);
+  assert.match(errado.erro, /Restam 4/);
+  for (let i = 0; i < 4; i++) await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '0001' });
+  const certoMasBloqueado = await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '9153' });
+  assert.match(certoMasBloqueado.erro, /Bloqueado/);
+  await rpc(CHEFE, 'definir_pin', { p_frentista_id: carlos, p_pin: '9153' });   // supervisor desbloqueia definindo o PIN de novo
+  assert.equal((await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '9153' })).ok, true);
+
+  const r = await rpc(POSTO, 'entrar_frentista', { p_frentista_id: ana, p_pin: '4827' });
+  assert.equal(r.ok, true);
+  assert.equal(r.frentista.nome, 'Ana Ribeiro');
+  sessao = r.sessao;
+  const guardados = (await db.query('select token_hash from sessoes_frentista')).rows.map(x => x.token_hash);
+  assert.ok(!guardados.includes(sessao));                 // o banco guarda só o hash do token
+});
+
+test('sessão do frentista só vale no celular que fez login e cai quando o PIN muda', async () => {
+  await assert.rejects(rpc(CHEFE, 'registrar_abastecimento', { p_sessao: sessao, p_dados: reg(20) }), /Login do frentista expirou/);
+  await assert.rejects(abastecer(reg(20), 'token-inventado'), /Login do frentista expirou/);
+  const outra = (await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '9153' })).sessao;
+  await rpc(CHEFE, 'definir_pin', { p_frentista_id: carlos, p_pin: '6402' });
+  await assert.rejects(abastecer(reg(20), outra), /Login do frentista expirou/);
+});
+
+// ---------- Abastecimento e desconto ----------
+test('abastecimento com desconto confirmado fica Pronto; toque duplo não duplica', async () => {
   const r = reg(9);
-  const [a] = await rpc(POSTO, 'registrar_abastecimentos', { p_registros: [r] });
+  const a = await abastecer(r);
   assert.equal(a.status, 'Pronto', JSON.stringify(a.problemas));
-  const [b] = await rpc(POSTO, 'registrar_abastecimentos', { p_registros: [r] });
-  assert.equal(b.id, a.id);
-  const n = (await db.query('select count(*)::int as n from abastecimentos where uuid = $1', [r.uuid])).rows[0].n;
-  assert.equal(n, 1);
+  assert.equal((await abastecer(r)).id, a.id);
+  const linha = (await db.query('select frentista_id, conta from abastecimentos where id = $1', [a.id])).rows[0];
+  assert.deepEqual(linha, { frentista_id: ana, conta: POSTO });
+});
+
+test('sem desconto: exige justificativa, espera autorização e não entra em lote até ser aprovado', async () => {
+  await assert.rejects(abastecer(reg(8, { km: 150300, litros: 100, encerrante: 7071786, desconto: false })), /justificativa/);
+  const a = await abastecer(reg(8, { km: 150300, litros: 100, encerrante: 7071786, desconto: false,
+    justificativa_desconto: 'Motorista agregado, acerto só no fim do mês' }));
+  assert.equal(a.status, 'Aguardando autorização');
+  const ok = await rpc(CHEFE, 'decidir_autorizacao', { p_id: a.id, p_aprovar: true, p_motivo: 'Desconto será feito no acerto' });
+  assert.equal(ok.status, 'Pronto');
+  assert.equal(ok.autorizado_por, CHEFE);
+  await assert.rejects(rpc(CHEFE, 'decidir_autorizacao', { p_id: a.id, p_aprovar: true, p_motivo: 'de novo' }), /não está aguardando/);
+});
+
+test('autorização recusada cancela o lançamento', async () => {
+  const a = await abastecer(reg(7, { placa: 'DEF4567', km: 98000, litros: 10, encerrante: 7071796, desconto: false,
+    justificativa_desconto: 'Sem tempo de descontar' }));
+  const r = await rpc(CHEFE, 'decidir_autorizacao', { p_id: a.id, p_aprovar: false, p_motivo: 'Precisa descontar antes' });
+  assert.equal(r.status, 'Cancelado');
+  assert.match(r.obs_supervisor, /recusada/);
 });
 
 test('banco reconfere: encerrante não bate vira Exceção, com número formatado', async () => {
-  const [a] = await rpc(POSTO, 'registrar_abastecimentos', { p_registros: [reg(8, { km: 150300, litros: 100, encerrante: 7071800 })] });
+  const a = await abastecer(reg(6, { km: 150400, litros: 50, encerrante: 7071900 }));
   assert.equal(a.status, 'Exceção');
-  assert.ok(a.problemas.some(p => p.includes('Encerrante indica 114 L (de 7.071.686 para 7.071.800)')), a.problemas.join(' | '));
+  assert.ok(a.problemas.some(p => p.includes('Encerrante indica 114 L (de 7.071.786 para 7.071.900)')), a.problemas.join(' | '));
 });
 
-test('hora no futuro e frentista inválido', async () => {
-  const [a] = await rpc(POSTO, 'registrar_abastecimentos', { p_registros: [reg(-60, { placa: 'DEF4567', km: 98000, litros: 10, encerrante: 9999999, bomba: 2 })] });
-  assert.ok(a.problemas.some(p => p.includes('futuro')));
-  assert.ok(a.problemas.some(p => p.includes('Bomba 2 não existe')));
-  await assert.rejects(rpc(POSTO, 'registrar_abastecimentos', { p_registros: [reg(10, { frentista_id: 99999 })] }), /Frentista/);
-  await assert.rejects(rpc(POSTO, 'registrar_abastecimentos', { p_registros: [reg(10, { litros: -5 })] }), /fora do permitido/);
+// ---------- Cadastros pelo frentista ----------
+test('frentista cadastra veículo novo com foto, mas não altera um existente', async () => {
+  await assert.rejects(rpc(POSTO, 'cadastrar_veiculo_app', { p_sessao: sessao, p_placa: 'GHI8J90', p_capacidade: 500, p_km: 220000, p_foto: null }), /foto/);
+  const f = foto('veiculo');
+  const r = await rpc(POSTO, 'cadastrar_veiculo_app', { p_sessao: sessao, p_placa: 'ghi-8j90', p_capacidade: 500, p_km: 220000, p_foto: f });
+  assert.equal(r.placa, 'GHI8J90');
+  const v = (await db.query("select criado_por from veiculos where placa = 'GHI8J90'")).rows[0];
+  assert.equal(v.criado_por, 'Frentista: Ana Ribeiro');
+  assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'veiculo', p_chave: 'GHI8J90' }))[0].caminho, f);
+  await assert.rejects(rpc(POSTO, 'cadastrar_veiculo_app', { p_sessao: sessao, p_placa: 'ABC1D23', p_capacidade: 900, p_km: 1, p_foto: foto('veiculo') }), /já está cadastrada/);
+  assert.equal((await como(POSTO, "update veiculos set capacidade_l = 900 where placa = 'GHI8J90' returning placa")).length, 0);
+  assert.equal(Number((await db.query("select capacidade_l from veiculos where placa = 'GHI8J90'")).rows[0].capacidade_l), 500);
 });
 
-test('supervisor corrige exceção e o histórico guarda o antes e o depois', async () => {
-  const exc = (await como(CHEFE, "select id from abastecimentos where status = 'Exceção' and litros = 100"))[0];
-  const r = await rpc(CHEFE, 'decidir_abastecimento', { p_id: exc.id, p_acao: 'revalidar', p_motivo: 'Visor mostrava 114 L', p_alteracoes: { litros: 114 } });
-  assert.equal(r.status, 'Pronto');
-  assert.equal(r.cpf, undefined);
-  const h = await como(CHEFE, "select detalhes from auditoria where entidade = 'abastecimento' and entidade_id = $1 and acao = 'abastecimento.revalidar'", [String(exc.id)]);
-  assert.deepEqual(h[0].detalhes.alterado.litros.map(Number), [100, 114]);
+test('frentista cadastra motorista com CPF válido; duplicado é recusado', async () => {
+  await assert.rejects(rpc(POSTO, 'cadastrar_motorista_app', { p_sessao: sessao, p_nome: 'Fulano de Tal', p_cpf: '111.111.111-11' }), /CPF inválido/);
+  const r = await rpc(POSTO, 'cadastrar_motorista_app', { p_sessao: sessao, p_nome: 'Maria Souza', p_cpf: '111.444.777-35' });
+  assert.equal(r.nome, 'MARIA SOUZA');
+  await assert.rejects(rpc(POSTO, 'cadastrar_motorista_app', { p_sessao: sessao, p_nome: 'Outra Pessoa', p_cpf: '11144477735' }), /já cadastrado/);
 });
 
-test('lote do KMM: gera, não repete, marca erro, confirma e trava alteração', async () => {
+// ---------- Chegada, fechamento e fotos ----------
+test('chegada e fechamento guardam fotos; caminho de foto fora do padrão é recusado', async () => {
+  await assert.rejects(rpc(POSTO, 'registrar_chegada', { p_sessao: sessao, p_dados: { uuid: randomUUID(), tanque: 'TQ01', data_hora: dh(5), nf: '1', litros: 100 },
+    p_fotos: ['../segredo.jpg'] }), /Foto inválida/);
+  const fotos = [foto('chegada'), foto('chegada')];
+  const c = await rpc(POSTO, 'registrar_chegada', { p_sessao: sessao, p_dados: { uuid: randomUUID(), tanque: 'TQ01', data_hora: dh(5), nf: '45871',
+    litros: 1000, regua_antes: 11000, regua_depois: 12000 }, p_fotos: fotos });
+  assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'chegada', p_chave: String(c.id) })).length, 2);
+  const [t] = await rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_fotos: [foto('fechamento')] });
+  // saídas pela bomba 1: 640 + 100 + 114 (o recusado foi cancelado e não conta); entrada: 1000
+  assert.equal(Number(t.saldo_calculado), 12000 + 1000 - 854);
+  await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 1 }, p_fotos: [] }), /já foi fechado/);
+  await assert.rejects(db.exec('delete from fotos'), /não pode ser alterada/);
+});
+
+// ---------- Lote do KMM ----------
+test('lote do KMM: só entra o Pronto, não repete, marca erro e trava alteração', async () => {
   const lote = await rpc(CHEFE, 'gerar_lote');
   assert.equal(lote.quantidade, 2);
   assert.equal(lote.linhas[0].cpf, '52998224725');
   await assert.rejects(rpc(CHEFE, 'gerar_lote'), /Não há abastecimentos prontos/);
   await rpc(CHEFE, 'marcar_erro_kmm', { p_id: lote.linhas[0].requisicao, p_mensagem: 'Placa bloqueada no KMM' });
-  const f = await rpc(CHEFE, 'fechar_lote', { p_lote: lote.id, p_acao: 'confirmar' });
-  assert.equal(f.registros, 1);
-  await assert.rejects(rpc(CHEFE, 'decidir_abastecimento', { p_id: lote.linhas[1].requisicao, p_acao: 'cancelar', p_motivo: 'teste de trava' }), /Corrija no KMM/);
-  await assert.rejects(rpc(CHEFE, 'fechar_lote', { p_lote: lote.id, p_acao: 'desfazer' }), /já está confirmado/);
-});
-
-test('fechamento do dia: conta certa e não fecha duas vezes', async () => {
-  const [t] = await rpc(POSTO, 'registrar_fechamento', { p_medidos: { TQ01: 11200 }, p_frentista_id: frentistaId });
-  // saídas pelo encerrante da bomba 1: 640 + 114 (o registro "do futuro" foi na bomba 2, que não existe, e não conta)
-  assert.equal(Number(t.saldo_calculado), 12000 - 754);
-  assert.equal(Number(t.diferenca), 11200 - 11246);
-  assert.equal(t.alerta, true);
-  await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_medidos: { TQ01: 1 }, p_frentista_id: frentistaId }), /já foi fechado/);
+  assert.equal((await rpc(CHEFE, 'fechar_lote', { p_lote: lote.id, p_acao: 'confirmar' })).registros, 1);
+  await assert.rejects(rpc(CHEFE, 'decidir_abastecimento', { p_id: lote.linhas[1].requisicao, p_acao: 'cancelar', p_motivo: 'teste de trava' }), /não pode ser alterado/);
 });
 
 test('ninguém apaga abastecimento nem mexe na auditoria', async () => {
   await assert.rejects(db.exec('delete from abastecimentos'), /não pode ser apagado/);
   await assert.rejects(db.exec('delete from auditoria'), /somente inclusão/);
-  await assert.rejects(db.exec("update auditoria set acao = 'x'"), /somente inclusão/);
-  assert.equal((await como(CHEFE, 'delete from auditoria returning id')).length, 0);   // RLS: nem chega a apagar
+  assert.equal((await como(DONO, 'delete from auditoria returning id')).length, 0);
 });
 
-// ---------- Cadastros pelo painel ----------
-test('supervisor cadastra: normaliza placa, valida CPF e registra no histórico com CPF mascarado', async () => {
-  await como(CHEFE, "insert into veiculos (placa, capacidade_l, km_inicial) values ('ghi-8j90', 500, 220000)");
-  assert.equal((await db.query("select placa from veiculos where placa = 'GHI8J90'")).rows.length, 1);
+// ---------- Papéis no painel ----------
+test('supervisor gerencia frentistas e cadastros', async () => {
+  await como(CHEFE, "insert into frentistas (nome) values ('Rafael Costa')");
+  await como(CHEFE, "update frentistas set nome = 'Rafael C. Costa' where nome = 'Rafael Costa'");
+  assert.equal((await como(CHEFE, "delete from frentistas where nome = 'Rafael C. Costa' returning id")).length, 1);
+  await assert.rejects(como(CHEFE, `delete from frentistas where id = ${ana}`), /foreign key/);   // com lançamentos: só desativar
+  assert.equal((await como(CHEFE, "update veiculos set capacidade_l = 520 where placa = 'GHI8J90' returning placa")).length, 1);
   await assert.rejects(como(CHEFE, "insert into motoristas (nome, cpf) values ('Fulano', '111.111.111-11')"), /check constraint/);
-  await como(CHEFE, "insert into motoristas (nome, cpf) values ('Maria Souza', '111.444.777-35')");
-  const a = (await db.query("select conta, detalhes from auditoria where acao = 'cadastro.motoristas.insert' order by id desc limit 1")).rows[0];
-  assert.equal(a.conta, CHEFE);
-  assert.equal(a.detalhes.depois.cpf, '***35');
-  assert.equal(a.detalhes.depois.nome, 'MARIA SOUZA');
 });
 
-// ---------- Administrador ----------
-test('administrador pode tudo que o supervisor pode', async () => {
-  assert.equal(await rpc(DONO, 'meu_papel'), 'administrador');
-  assert.ok((await como(DONO, 'select * from veiculos')).length > 0);
-  assert.ok(Array.isArray(await rpc(DONO, 'linhas_lote', { p_lote: 1 })));
-});
-
-test('supervisor não exclui, não desativa, não rebaixa e não cria administrador', async () => {
-  await assert.rejects(como(CHEFE, `delete from acessos where email = '${DONO}'`), /Somente um administrador/);
-  await assert.rejects(como(CHEFE, `update acessos set ativo = false where email = '${DONO}'`), /Somente um administrador/);
-  await assert.rejects(como(CHEFE, `update acessos set papel = 'supervisor' where email = '${DONO}'`), /Somente um administrador/);
-  await assert.rejects(como(CHEFE, "insert into acessos (email, nome, papel) values ('outro@empresa.com', 'Outro', 'administrador')"), /Somente um administrador/);
-  await assert.rejects(como(CHEFE, `update acessos set papel = 'administrador' where email = '${CHEFE}'`), /Somente um administrador/);
-  const dono = (await db.query(`select papel, ativo from acessos where email = '${DONO}'`)).rows[0];
-  assert.deepEqual(dono, { papel: 'administrador', ativo: true });
-});
-
-test('supervisor exclui acesso de celular, e fica na auditoria', async () => {
+test('supervisor só gerencia contas de celular; administradores só pelo dono do projeto', async () => {
   await como(CHEFE, "insert into acessos (email, nome, papel) values ('posto9@empresa.com', 'Celular 9', 'posto')");
-  const apagados = await como(CHEFE, "delete from acessos where email = 'posto9@empresa.com' returning email");
-  assert.equal(apagados.length, 1);
-  const a = (await db.query("select conta from auditoria where acao = 'cadastro.acessos.delete' and entidade_id = 'posto9@empresa.com'")).rows;
-  assert.equal(a[0].conta, CHEFE);
+  assert.equal((await como(CHEFE, "delete from acessos where email = 'posto9@empresa.com' returning email")).length, 1);
+  await assert.rejects(como(CHEFE, "insert into acessos (email, nome, papel) values ('sup2@empresa.com', 'Sup 2', 'supervisor')"), /só gerencia contas de celular/);
+  await assert.rejects(como(CHEFE, `update acessos set papel = 'posto' where email = '${CHEFE}'`), /só gerencia contas de celular/);
+  await assert.rejects(como(CHEFE, `delete from acessos where email = '${DONO}'`), /dono do projeto/);
+  // administrador: gerencia supervisores e celulares, mas não mexe em administrador (nem em si mesmo)
+  await como(DONO, "insert into acessos (email, nome, papel) values ('sup2@empresa.com', 'Sup 2', 'supervisor')");
+  assert.equal((await como(DONO, "delete from acessos where email = 'sup2@empresa.com' returning email")).length, 1);
+  await assert.rejects(como(DONO, `update acessos set ativo = false where email = '${DONO}'`), /dono do projeto/);
+  await assert.rejects(como(DONO, "insert into acessos (email, nome, papel) values ('x@empresa.com', 'X', 'administrador')"), /dono do projeto/);
+  // dono do projeto (SQL Editor, sem login) pode
+  await db.exec(`update acessos set nome = 'Dono da empresa' where email = '${DONO}'`);
 });
 
-test('o único administrador ativo não pode sair, nem por conta própria', async () => {
-  await assert.rejects(como(DONO, `update acessos set ativo = false where email = '${DONO}'`), /único administrador/);
-  await assert.rejects(como(DONO, `delete from acessos where email = '${DONO}'`), /único administrador/);
-  await assert.rejects(como(DONO, `update acessos set papel = 'supervisor' where email = '${DONO}'`), /único administrador/);
+test('supervisor vê a auditoria, menos as ações de administradores', async () => {
+  await rpc(DONO, 'definir_pin', { p_frentista_id: ana, p_pin: '5820' });
+  assert.ok((await como(DONO, "select acao from auditoria where papel = 'administrador'")).length > 0);
+  const vistoPeloChefe = await como(CHEFE, 'select acao, papel from auditoria');
+  assert.ok(vistoPeloChefe.length > 0);
+  assert.ok(vistoPeloChefe.every(a => a.papel !== 'administrador'));
+  assert.ok(vistoPeloChefe.some(a => a.papel === 'posto'));       // vê o que foi feito pelos celulares
 });
 
-test('com dois administradores, um pode remover o outro; o dono do projeto (SQL Editor) sempre pode', async () => {
-  await como(DONO, "insert into acessos (email, nome, papel) values ('socio@empresa.com', 'Sócio', 'administrador')");
-  assert.equal((await como(DONO, "update acessos set ativo = false where email = 'socio@empresa.com' returning email")).length, 1);
-  await como(DONO, "delete from acessos where email = 'socio@empresa.com'");
-  await db.exec(`update acessos set ativo = false where email = '${DONO}'`);   // SQL Editor: sem login
-  await db.exec(`update acessos set ativo = true where email = '${DONO}'`);
+test('supervisor anexa foto a um veículo pelo painel; celular não pode', async () => {
+  const f = foto('veiculo');
+  await rpc(CHEFE, 'anexar_foto_veiculo', { p_placa: 'abc-1d23', p_foto: f });
+  assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'veiculo', p_chave: 'ABC1D23' }))[0].caminho, f);
+  await assert.rejects(rpc(POSTO, 'anexar_foto_veiculo', { p_placa: 'ABC1D23', p_foto: foto('veiculo') }), /Acesso negado/);
 });

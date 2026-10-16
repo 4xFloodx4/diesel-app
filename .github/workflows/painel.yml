@@ -33,6 +33,9 @@ jobs:
           SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
           APP_ESQUEMA: ${{ vars.APP_ESQUEMA }}
+          VERSAO_WEB: ${{ github.sha }}
+      - name: Pacote de atualização do app
+        run: VERSAO_WEB="$GITHUB_SHA" node scripts/pacote-atualizacao.mjs
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

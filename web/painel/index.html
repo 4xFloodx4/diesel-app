@@ -15,10 +15,12 @@
     <div class="marca"><b>Painel do Diesel</b><span id="quem"></span></div>
     <nav class="abas" id="abas" hidden>
       <button type="button" data-aba="resumo">Resumo</button>
-      <button type="button" data-aba="excecoes">Exceções</button>
+      <button type="button" data-aba="autorizacoes">Autorizações <span class="contador" id="n-autorizacoes" hidden></span></button>
+      <button type="button" data-aba="excecoes">Exceções <span class="contador" id="n-excecoes" hidden></span></button>
       <button type="button" data-aba="abastecimentos">Abastecimentos</button>
       <button type="button" data-aba="lotes">Lotes KMM</button>
       <button type="button" data-aba="fechamentos">Fechamentos</button>
+      <button type="button" data-aba="frentistas">Frentistas</button>
       <button type="button" data-aba="cadastros">Cadastros</button>
       <button type="button" data-aba="acessos">Acessos</button>
       <button type="button" data-aba="auditoria">Auditoria</button>
@@ -27,5 +29,6 @@
   </header>
   <div id="aviso" class="aviso" hidden></div>
   <main class="pagina" id="pagina"><p class="hint">Carregando…</p></main>
+  <div class="modal" id="modal" hidden></div>
 </body>
 </html>
