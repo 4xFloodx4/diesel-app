@@ -13,7 +13,9 @@ import { fileURLToPath } from 'node:url';
 
 const RAIZ = join(dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = join(RAIZ, 'web');
-const local = existsSync(join(RAIZ, 'config.local.json')) ? JSON.parse(readFileSync(join(RAIZ, 'config.local.json'), 'utf8')) : {};
+const lerJson = nome => existsSync(join(RAIZ, nome)) ? JSON.parse(readFileSync(join(RAIZ, nome), 'utf8')) : {};
+// Ordem: variáveis do GitHub, config.local.json (só no seu computador), config.publica.json (no repositório)
+const local = { ...lerJson('config.publica.json'), ...lerJson('config.local.json') };
 // Tolera os deslizes comuns ao colar: espaços, barra no final, letras maiúsculas no endereço
 const limpar = v => String(v || '').trim().replace(/^["']|["']$/g, '').trim();
 const cfg = {
