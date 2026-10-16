@@ -35,6 +35,8 @@ if (!demo && /service_role/.test(Buffer.from(cfg.chave.split('.')[1] || '', 'bas
 }
 if (problemas.length) {
   console.error('Configuração incompleta:\n- ' + problemas.join('\n- ') + '\nVeja docs/CONFIGURAR.md, passo 4.');
+  // No GitHub Actions, aparece como aviso no resumo da execução (sem expor a chave)
+  if (process.env.GITHUB_ACTIONS) problemas.forEach(p => console.log(`::error title=Configuração::${p}`));
   process.exit(1);
 }
 if (!/^[a-z][a-z0-9.]+$/.test(cfg.esquema)) { console.error('APP_ESQUEMA inválido.'); process.exit(1); }
