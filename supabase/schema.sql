@@ -158,6 +158,9 @@ alter table veiculos add column if not exists criado_por text;
 alter table veiculos add column if not exists criado_em timestamptz default now();
 -- Placa importada da planilha (só placa + motorista) entra sem capacidade: o frentista informa no primeiro abastecimento
 alter table veiculos alter column capacidade_l drop not null;
+-- Tanque do caminhão: 1100 L por padrão (placa nova, da planilha, do painel ou do app). Se for diferente, o frentista corrige no app.
+alter table veiculos alter column capacidade_l set default 1100;
+update veiculos set capacidade_l = 1100 where capacidade_l is null;
 -- KM corrigido (pelo frentista no app ou no painel): vira o novo ponto de partida. A conferência de KM ignora os
 -- abastecimentos anteriores a este momento (ex.: painel do caminhão trocado, ou um KM digitado errado antes).
 alter table veiculos add column if not exists km_desde timestamp;
@@ -353,8 +356,15 @@ create table if not exists fotos (
   criado_em     timestamptz not null default now()
 );
 alter table fotos drop constraint if exists fotos_entidade_check;
-alter table fotos add constraint fotos_entidade_check check (entidade in ('fechamento', 'chegada', 'veiculo', 'afericao'));
+alter table fotos add constraint fotos_entidade_check check (entidade in ('fechamento', 'chegada', 'veiculo', 'afericao', 'abastecimento'));
 create index if not exists ix_fotos_chave on fotos (entidade, chave);
+-- Comprovante do abastecimento (foto do comprovante junto com o visor da bomba) vai para o Google Drive: um Apps Script
+-- copia para Abastecimentos/AAAA-MM/DD/Comprovante-PLACA-HHMM.jpg e apaga do Storage, que fica só como fila de passagem.
+alter table fotos add column if not exists drive_id text;
+alter table fotos add column if not exists drive_url text;
+alter table fotos add column if not exists no_drive_em timestamptz;
+alter table fotos add column if not exists fora_do_storage boolean not null default false;
+create index if not exists ix_fotos_fila_drive on fotos (id) where entidade = 'abastecimento' and not fora_do_storage;
 
 create table if not exists auditoria (
   id           bigint generated always as identity primary key,
@@ -440,9 +450,19 @@ create trigger auditoria_imutavel before update or delete on auditoria
 drop trigger if exists abastecimento_sem_delete on abastecimentos;
 create trigger abastecimento_sem_delete before delete on abastecimentos
   for each row execute function bloquear_alteracao('Abastecimento não pode ser apagado; use o status Cancelado.');
+-- Foto registrada não muda; só as colunas do Google Drive são preenchidas depois (pelo Apps Script)
+create or replace function proteger_foto() returns trigger
+language plpgsql as $$
+declare c text[] := array['drive_id', 'drive_url', 'no_drive_em', 'fora_do_storage'];
+begin
+  if to_jsonb(new) - c is distinct from to_jsonb(old) - c then
+    raise exception 'Foto registrada não pode ser alterada; exclua e envie outra.' using errcode = '42501';
+  end if;
+  return new;
+end $$;
 drop trigger if exists fotos_imutaveis on fotos;
 create trigger fotos_imutaveis before update on fotos
-  for each row execute function bloquear_alteracao('Foto registrada não pode ser alterada; exclua e envie outra.');
+  for each row execute function proteger_foto();
 
 -- ---------- Login do frentista (nome + PIN no celular do posto) ----------
 create or replace function hash_pin(p_pin text, p_sal text) returns text
@@ -750,7 +770,9 @@ begin
   end if;
 end $$;
 
-create or replace function registrar_abastecimento(p_sessao text, p_dados jsonb) returns jsonb
+-- Foto do comprovante junto com o visor da bomba: obrigatória, uma por abastecimento
+drop function if exists registrar_abastecimento(text, jsonb);
+create or replace function registrar_abastecimento(p_sessao text, p_dados jsonb, p_fotos text[] default '{}') returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
   r jsonb := p_dados; v_ex abastecimentos; c jsonb; v_id bigint; v_status text;
@@ -781,6 +803,9 @@ begin
   end if;
   v_preco := (r ->> 'preco')::numeric;
   if v_preco is not null and (v_preco <= 0 or v_preco >= 100) then raise exception 'Preço do litro inválido.' using errcode = '22023'; end if;
+  if coalesce(cardinality(p_fotos), 0) <> 1 then
+    raise exception 'Tire a foto do comprovante junto com o visor da bomba (uma foto).' using errcode = '22023';
+  end if;
   perform validar_data_lancamento(v_dh);
   v_fora := fora_do_turno(v_dh);
   v_just_h := nullif(trim(coalesce(r ->> 'justificativa_horario', '')), '');
@@ -829,9 +854,11 @@ begin
     from veiculos v join motoristas m on m.nome = c ->> 'motorista' and m.ativo
    where v.placa = c ->> 'placa'
   on conflict do nothing;
+  perform registrar_fotos('abastecimento', v_id::text, p_fotos, v_frent);
   perform auditar('abastecimento.recebido', 'abastecimento', v_id::text,
                   jsonb_build_object('placa', c ->> 'placa', 'litros', v_lt, 'bomba', v_bomba, 'status', v_status, 'frentista_id', v_frent,
-                                     'frentista', (select nome from frentistas where id = v_frent), 'desconto', v_desconto, 'fora_horario', v_fora));
+                                     'frentista', (select nome from frentistas where id = v_frent), 'desconto', v_desconto, 'fora_horario', v_fora,
+                                     'fotos', cardinality(p_fotos)));
   return jsonb_build_object('uuid', r ->> 'uuid', 'id', v_id, 'status', v_status, 'problemas', c -> 'problemas');
 end $$;
 
@@ -1229,7 +1256,8 @@ create or replace function fotos_de(p_entidade text, p_chave text) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 begin
   perform exigir(array['supervisor']);
-  return coalesce((select jsonb_agg(jsonb_build_object('caminho', caminho, 'criado_em', criado_em) order by id)
+  return coalesce((select jsonb_agg(jsonb_build_object('caminho', caminho, 'criado_em', criado_em, 'drive_id', drive_id, 'drive_url', drive_url,
+                                                     'no_storage', not fora_do_storage) order by id)
                    from fotos where entidade = p_entidade and chave = p_chave), '[]');
 end $$;
 
@@ -1253,6 +1281,31 @@ begin
   delete from fotos where caminho = p_caminho returning * into v;
   if v.id is null then raise exception 'Foto não encontrada.' using errcode = 'P0002'; end if;
   perform auditar('foto.excluida', v.entidade, v.chave, jsonb_build_object('caminho', p_caminho, 'enviada_em', v.criado_em, 'enviada_por', v.conta));
+end $$;
+
+-- ---------- Google Drive: comprovantes dos abastecimentos ----------
+-- Chamadas só pelo Apps Script do Google (scripts/drive-comprovantes.gs), com a chave service_role guardada nas
+-- propriedades do script. Fila: comprovante que ainda está no Storage (sem cópia no Drive, ou copiado e ainda não apagado).
+create or replace function fotos_para_drive(p_limite integer default 25) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(x order by x.id), '[]') from (
+    select f.id, f.caminho, f.drive_id, a.id as abastecimento, a.placa, to_char(a.data_hora, 'YYYY-MM-DD"T"HH24:MI:SS') as data_hora
+      from fotos f join abastecimentos a on a.id::text = f.chave
+     where f.entidade = 'abastecimento' and not f.fora_do_storage
+     order by f.id limit least(greatest(coalesce(p_limite, 25), 1), 100)) x
+$$;
+
+-- Copiado para o Drive (p_fora_do_storage = false) e, depois, apagado do Storage (true)
+create or replace function foto_no_drive(p_caminho text, p_drive_id text, p_drive_url text, p_fora_do_storage boolean default false)
+returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if coalesce(p_drive_id, '') !~ '^[A-Za-z0-9_-]{10,200}$' then raise exception 'ID do Drive inválido.' using errcode = '22023'; end if;
+  if coalesce(p_drive_url, '') !~ '^https://drive\.google\.com/' then raise exception 'Link do Drive inválido.' using errcode = '22023'; end if;
+  update fotos set drive_id = p_drive_id, drive_url = left(p_drive_url, 500), no_drive_em = coalesce(no_drive_em, now()),
+         fora_do_storage = fora_do_storage or coalesce(p_fora_do_storage, false)
+   where caminho = p_caminho and entidade = 'abastecimento';
+  if not found then raise exception 'Foto não encontrada.' using errcode = 'P0002'; end if;
 end $$;
 
 -- ---------- RLS: ninguém vê nada sem estar em "acessos" ----------
@@ -1302,7 +1355,7 @@ begin
     execute $p$create policy fotos_enviar on storage.objects for insert to authenticated with check (
       bucket_id = 'fotos' and public.meu_papel() is not null
       and (public.foto_valida(name, 'fechamento') or public.foto_valida(name, 'chegada') or public.foto_valida(name, 'veiculo')
-           or public.foto_valida(name, 'afericao')))$p$;
+           or public.foto_valida(name, 'afericao') or public.foto_valida(name, 'abastecimento')))$p$;
     execute $p$create policy fotos_ver on storage.objects for select to authenticated using (
       bucket_id = 'fotos' and public.sou_gestor())$p$;
     execute $p$create policy fotos_apagar on storage.objects for delete to authenticated using (
@@ -1321,7 +1374,7 @@ begin
 end $$;
 
 grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frentista(bigint, text), sair_frentista(text),
-  registrar_abastecimento(text, jsonb), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[]),
+  registrar_abastecimento(text, jsonb, text[]), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[]),
   registrar_afericao(text, jsonb, text[]),
   cadastrar_veiculo_app(text, text, numeric, integer, text), cadastrar_motorista_app(text, text, text),
   corrigir_veiculo_app(text, text, numeric, integer), definir_preco_diesel(text, numeric, text),
@@ -1332,5 +1385,7 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frent
 -- As políticas RLS, as do Storage e os gatilhos chamam estas; precisam estar liberadas para quem está logado
 grant execute on function exigir(text[]), sou_gestor(), fora_do_turno(timestamp), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text),
   placa_valida(text), cpf_valido(text), fmt(numeric), foto_valida(text, text), normalizar_cadastro(), auditar_cadastro(),
-  bloquear_alteracao(), proteger_acessos()
+  bloquear_alteracao(), proteger_acessos(), proteger_foto()
   to authenticated;
+-- Só o Apps Script do Google Drive (chave service_role)
+grant execute on function fotos_para_drive(integer), foto_no_drive(text, text, text, boolean) to service_role;

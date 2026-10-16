@@ -21,6 +21,7 @@ export const GUIA = {
       <li>No app: toque na <b>bomba em que abasteceu</b> (ela não vem marcada; cada bomba tem o próprio encerrante).</li>
       <li>Digite o <b>começo da placa</b> e toque nela na lista. Os motoristas daquela placa aparecem: toque no certo, ou digite o começo do nome (ex.: "jo si" acha JOÃO DA SILVA).</li>
       <li>Digite o <b>KM do painel</b> do caminhão, os litros e o encerrante final.</li>
+      <li>Toque em <b>+ Tirar foto</b> e fotografe o <b>comprovante do abastecimento junto com o visor da bomba</b>, com os números legíveis. Sem a foto, o app não envia.</li>
       <li>Confira as bolinhas: verde é tudo certo. Vermelho quer dizer que algum número não bate.</li>
       <li>Toque em <b>Usar o preço atual</b> do diesel. Se o preço mudou, toque em <b>Atualizar</b> e digite o novo: vale para todos daqui em diante.</li>
       <li>Responda se o diesel foi <b>descontado do motorista</b>.</li><li>Toque em <b>Enviar abastecimento</b> e espere a mensagem de lançado.</li></ol>
@@ -32,7 +33,7 @@ export const GUIA = {
     ['relogio', 'Fora do horário do turno', 'Das {FECHAMENTO} às {ABERTURA}', `<p>O turno vai das <b>{ABERTURA} às {FECHAMENTO}</b>. Lançamento fora desse horário só entra com justificativa e autorização do supervisor ou do administrador.</p>
       <div class="atencao"><b>Depois do fechamento do turno</b>, não dá para lançar mais nada com a data daquele dia.</div>`],
     ['caminhao', 'Placa ou motorista que não está na lista', 'Cadastro pelo app', `<ol><li>Se a busca não achar, toque em <b>+ Cadastrar</b>: o cadastro já vem com o que você digitou.</li>
-      <li>Veículo: digite a placa, o tamanho do tanque e o KM, e <b>tire uma foto do caminhão mostrando a placa</b>.</li>
+      <li>Veículo: digite a placa e o KM (o tanque já vem com 1100 L; mude se for diferente) e <b>tire uma foto do caminhão mostrando a placa</b>.</li>
       <li>Motorista: nome completo e CPF (o KMM exige o CPF).</li>
       <li><b>Tanque ou KM do caminhão errado?</b> Depois de escolher a placa, toque em <b>Corrigir tanque ou KM deste caminhão</b>. Vale na hora e fica registrado com seu nome.</li></ol><div class="dica">Ao enviar o abastecimento, o motorista fica ligado àquela placa e aparece da próxima vez.
       Depois de cadastrado, só o supervisor pode alterar. Errou algo? Avise.</div>`],

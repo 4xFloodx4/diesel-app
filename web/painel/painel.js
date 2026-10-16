@@ -254,13 +254,15 @@ function graficoHoras(abHoje) {
   return `<div class="grafico"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Litros lançados por hora hoje: ${nf(total, 0)} litros no total">${grid}${barras}</svg>
     <div class="dica-graf" hidden></div></div>`;
 }
-function tabelaLancamentos(lista) {
+const botaoComprovante = (r, texto = 'Ver') => `<button class="btn small ghost" type="button" data-acao="ver-fotos" data-entidade="abastecimento"
+  data-chave="${esc(r.id)}" data-titulo="${esc(`Comprovante #${r.id} · ${r.placa}`)}">${texto}</button>`;
+function tabelaLancamentos(lista, comComprovante = false) {
   if (!lista.length) return '<p class="vazio">Nenhum lançamento.</p>';
-  return `<div class="tabela"><table><thead><tr><th>Nº</th><th>Data</th><th>Veículo</th><th class="n">KM</th><th class="n">Litros</th><th class="n">Bomba</th><th>Desconto</th><th>Frentista</th><th>Situação</th></tr></thead><tbody>
+  return `<div class="tabela"><table><thead><tr><th>Nº</th><th>Data</th><th>Veículo</th><th class="n">KM</th><th class="n">Litros</th><th class="n">Bomba</th><th>Desconto</th><th>Frentista</th><th>Situação</th>${comComprovante ? '<th>Comprovante</th>' : ''}</tr></thead><tbody>
     ${lista.map(r => `<tr><td class="n">#${esc(r.id)}</td><td class="num">${r.data_hora.slice(0, 10) === hojeISO() ? hora(r.data_hora) : dataHora(r.data_hora)}</td>
       <td>${placa(r.placa)}<span class="sub">${esc(r.motorista)}</span></td><td class="n">${nf(r.km, 0)}</td><td class="n">${nf(r.litros)}</td><td class="n">${esc(r.bomba)}</td>
       <td>${r.desconto_confirmado ? 'Sim' : '<b>Não</b>'}${r.fora_horario ? '<span class="sub">fora do horário</span>' : ''}</td><td>${esc(r.frentistas?.nome || '')}</td>
-      <td>${pill(r.status)}${r.problemas?.length ? `<span class="sub">${esc(r.problemas.join(' '))}</span>` : ''}</td></tr>`).join('')}
+      <td>${pill(r.status)}${r.problemas?.length ? `<span class="sub">${esc(r.problemas.join(' '))}</span>` : ''}</td>${comComprovante ? `<td>${botaoComprovante(r)}</td>` : ''}</tr>`).join('')}
   </tbody></table></div>`;
 }
 
@@ -355,7 +357,7 @@ function detalheDecisao(r) {
     r.obs_frentista ? ['pend', 'Observação do frentista', esc(r.obs_frentista)] : null,
   ].filter(Boolean);
   return `<form class="detalhe" data-decidir="${esc(r.id)}" data-tipo="${aut ? 'autorizacao' : 'excecao'}">
-    <div class="acoes">${`<h2>${esc(r.placa)}</h2>`}${t.chips.map(([k, n]) => `<span class="chip ${k}">${n}</span>`).join('')}<span class="hint">#${esc(r.id)}</span></div>
+    <div class="acoes">${`<h2>${esc(r.placa)}</h2>`}${t.chips.map(([k, n]) => `<span class="chip ${k}">${n}</span>`).join('')}<span class="hint">#${esc(r.id)}</span>${botaoComprovante(r, 'Ver comprovante')}</div>
     <div class="ficha">
       <div><small>Motorista</small><b class="txt">${esc(r.motorista)}</b></div><div><small>Litros</small><b>${nf(r.litros)}</b></div>
       <div><small>KM</small><b>${nf(r.km, 0)}</b></div><div><small>Bomba</small><b>${esc(r.bomba)}</b></div>
@@ -428,7 +430,7 @@ TELAS.abastecimentos = async () => {
         ${fl.de || fl.ate || fl.status || fl.placa ? '<button class="btn small ghost" type="button" data-acao="limpar-filtros">Limpar</button>' : ''}
       </form>
       <div class="contagem">${lista.length} registro(s)${lista.length === 1000 ? ' (limite da tela; a exportação traz todos)' : ''}</div>
-      ${tabelaLancamentos(lista)}
+      ${tabelaLancamentos(lista, true)}
     </section>`;
 };
 
@@ -459,17 +461,32 @@ async function verFotos(entidade, chave, titulo) {
   if (demo()) { avisar('Modo demonstração: não há fotos de exemplo.', 'info'); return; }
   const lista = await chamar(() => rpc('fotos_de', { p_entidade: entidade, p_chave: String(chave) }));
   if (!lista) return;
-  const links = await chamar(() => linksDasFotos(lista.map(f => f.caminho)));
-  if (!links) return;
+  // Comprovante já levado para o Google Drive saiu do Storage: abre pelo Drive (a miniatura só carrega para quem tem acesso à pasta)
+  const doStorage = lista.filter(f => f.no_storage !== false);
+  const assinados = await chamar(() => linksDasFotos(doStorage.map(f => f.caminho)));
+  if (!assinados) return;
+  const link = new Map(doStorage.map((f, i) => [f.caminho, assinados[i]]));
+  const figura = (f, i) => {
+    const u = link.get(f.caminho);
+    if (!u && f.drive_url) {
+      return `<figure><a href="${esc(f.drive_url)}" target="_blank" rel="noopener noreferrer"><img data-drive src="https://drive.google.com/thumbnail?id=${encodeURIComponent(f.drive_id)}&amp;sz=w1000" alt="Foto ${i + 1}" loading="lazy"></a>
+        <figcaption class="hint">${esc(quandoLocal(f.criado_em))} · no Google Drive</figcaption>
+        <a class="btn small ghost" href="${esc(f.drive_url)}" target="_blank" rel="noopener noreferrer">Abrir no Google Drive</a></figure>`;
+    }
+    if (!u) return `<figure><figcaption class="hint">${esc(quandoLocal(f.criado_em))} · arquivo não encontrado</figcaption></figure>`;
+    return `<figure><a href="${esc(u)}" target="_blank" rel="noopener noreferrer"><img src="${esc(u)}" alt="Foto ${i + 1}" loading="lazy"></a>
+        <figcaption class="hint">${esc(quandoLocal(f.criado_em))}${entidade === 'abastecimento' ? ' · ainda indo para o Google Drive' : ''}</figcaption>
+        <button class="btn small warn" type="button" data-acao="excluir-foto" data-caminho="${esc(f.caminho)}">Excluir foto</button></figure>`;
+  };
   const m = $('modal');
   Object.assign(m.dataset, { entidade, chave, titulo });
   m.innerHTML = `<div class="janela" role="dialog" aria-modal="true" aria-label="${esc(titulo)}"><div class="acoes entre"><h2>${esc(titulo)}</h2>
       <button class="btn small ghost" type="button" data-acao="fechar-modal">Fechar</button></div>
-    ${links.length ? `<div class="galeria">${links.map((u, i) => `<figure><a href="${esc(u)}" target="_blank" rel="noopener noreferrer"><img src="${esc(u)}" alt="Foto ${i + 1}" loading="lazy"></a>
-        <figcaption class="hint">${esc(quandoLocal(lista[i].criado_em))}</figcaption>
-        <button class="btn small warn" type="button" data-acao="excluir-foto" data-caminho="${esc(lista[i].caminho)}">Excluir foto</button></figure>`).join('')}</div>`
-      : '<p class="hint">Sem fotos.</p>'}
+    ${lista.length ? `<div class="galeria">${lista.map(figura).join('')}</div>`
+      : `<p class="hint">${entidade === 'abastecimento' ? 'Sem foto do comprovante (lançamento de antes da foto obrigatória).' : 'Sem fotos.'}</p>`}
     <p class="hint">Toque numa foto para abrir em tamanho real. Os links valem por 10 minutos. Excluir uma foto fica registrado na auditoria.</p></div>`;
+  // Sem acesso à pasta do Drive neste navegador, a miniatura não carrega: fica só o botão de abrir no Drive
+  m.querySelectorAll('img[data-drive]').forEach(img => img.addEventListener('error', () => img.closest('a').remove(), { once: true }));
   m.hidden = false;
   m.querySelector('[data-acao="fechar-modal"]').focus();
 }
@@ -654,7 +671,7 @@ TELAS.veiculos = async () => {
     <div class="duas">
       <section class="painel"><header><h2>Veículos</h2><span>${c.veiculos.length} cadastrado(s)</span></header>
         <div class="corpo"><form class="formulario" data-form="veiculos">
-          ${campo('Placa', 'placa', 'required maxlength="8" autocomplete="off"')}${campo('Tanque do veículo (L)', 'capacidade_l', 'class="num" inputmode="decimal" required')}
+          ${campo('Placa', 'placa', 'required maxlength="8" autocomplete="off"')}${campo('Tanque do veículo (L)', 'capacidade_l', 'class="num" inputmode="decimal" required value="1100"')}
           ${campo('Último KM conhecido', 'km_inicial', 'class="num" inputmode="numeric"')}${simNao('Ativo', 'ativo')}
           <button class="btn small" type="submit">Salvar veículo</button></form></div>
         <div class="tabela"><table><thead><tr><th>Placa</th><th class="n">Tanque</th><th class="n">KM inicial</th><th>Ativo</th><th>Motoristas</th><th></th></tr></thead><tbody>

@@ -97,7 +97,7 @@ Para atualizar o app depois, crie uma nova release com tag maior (`v1.0.1`, `v1.
 3. **Cadastros** (Tanques e fechamentos; Veículos e motoristas):
    - tanques: capacidade e saldo medido no dia da implantação;
    - bombas: encerrante lido no dia da implantação. Posto com 1 tanque e 2 bombas: cadastre o tanque (ex.: `TQ01`) e as bombas 1 e 2, as duas ligadas a `TQ01`, cada uma com o próprio encerrante. No app, o frentista escolhe a bomba a cada lançamento, e o fechamento soma o que saiu pelas duas;
-   - veículos e motoristas: em **Veículos e motoristas › Base em Excel**, importe a planilha com as abas `Veiculos` (placa, capacidade_tanque_l, km_inicial, ativo), `Motoristas` (nome, cpf, ativo) e `Vinculos` (placa, motorista, cpf). O mais fácil é clicar em **Exportar base**, preencher e importar de volta. Os CSV do KMM (`placa;capacidade_tanque_l;ultimo_km` e `nome;cpf`) também são aceitos.
+   - veículos e motoristas: o tanque do caminhão já vem com **1100 L**; só mude o que for diferente. Em **Veículos e motoristas › Base em Excel**, importe a planilha com as abas `Veiculos` (placa, capacidade_tanque_l, km_inicial, ativo), `Motoristas` (nome, cpf, ativo) e `Vinculos` (placa, motorista, cpf). O mais fácil é clicar em **Exportar base**, preencher e importar de volta. Os CSV do KMM (`placa;capacidade_tanque_l;ultimo_km` e `nome;cpf`) também são aceitos.
 
 **No celular do posto:**
 1. Abra no Chrome o link da release e baixe o `abastecimento-diesel.apk`.
@@ -105,11 +105,41 @@ Para atualizar o app depois, crie uma nova release com tag maior (`v1.0.1`, `v1.
 3. Abra o app → **Entrar com Google** → escolha a conta do posto. Ele fica logado.
 4. O celular precisa ter **bloqueio de tela** (senha ou digital).
 
+## 8. Comprovantes no Google Drive
+
+Todo abastecimento leva uma foto do comprovante junto com o visor da bomba. O app manda a foto para o Supabase, que só segura até ela ir para o Drive. Um script do Google, na sua conta, leva as fotos a cada 10 minutos para:
+
+```
+Abastecimentos/
+  2026-10/
+    16/
+      Comprovante-ABC1D23-1432.jpg
+```
+
+O arquivo tem a placa e a hora do abastecimento. O mesmo caminhão duas vezes no mesmo minuto vira `-2`. O painel abre a foto pelo link do Drive, no botão **Ver** da lista de abastecimentos e em **Ver comprovante** nas decisões.
+
+Espaço: com cerca de 25 abastecimentos por dia, dá uns 250 MB por mês. Os 15 GB do Drive grátis guardam alguns anos. O Drive não apaga nada sozinho.
+
+**Instalar (uma vez):**
+1. Rode o `supabase/schema.sql` novo no SQL Editor (veja "Atualizar o banco").
+2. No Supabase, **Project Settings** → **API Keys**: copie a chave **service_role** (ou a **secret**, se o projeto usa as chaves novas). Ela abre o banco todo: só vai no passo 4, nunca no código, no GitHub ou em mensagem.
+3. Entre em **script.google.com** com a conta Google que vai guardar as fotos → **Novo projeto** → apague o que estiver lá, cole todo o conteúdo de `scripts/drive-comprovantes.gs` e salve (Ctrl+S). Dê um nome, como "Comprovantes diesel".
+4. Engrenagem **Configurações do projeto** → **Propriedades do script** → **Adicionar propriedade de script**:
+   - `SUPABASE_URL` = `https://xxxx.supabase.co` (o mesmo do passo 1)
+   - `SUPABASE_SERVICE_KEY` = a chave do passo 2
+   - `PASTA_ID` (opcional) = o ID de uma pasta que já exista (o que vem depois de `/folders/` no endereço). Sem ele, o script cria **Abastecimentos** no Meu Drive.
+5. Volte ao **Editor**, escolha a função **instalar** no alto e clique em **Executar**. Na primeira vez o Google pede autorização: escolha a conta, **Avançado** → **Acessar (não seguro)** → **Permitir**. O aviso aparece porque o script é seu e não foi publicado; ele só mexe no seu Drive e fala com o seu Supabase.
+6. Em **Execuções** deve aparecer "Ligação com o Supabase OK". Pronto: o gatilho de 10 em 10 minutos ficou criado (em **Acionadores**).
+
+**Ver as fotos pelo painel:** compartilhe a pasta **Abastecimentos** no Drive com a conta Google de cada supervisor, como **Leitor**. Quem não tem acesso vê o botão **Abrir no Google Drive**, mas o Drive pede permissão.
+
+**Se algo falhar:** o Google manda um e-mail quando uma execução dá erro. As fotos que não foram ficam no Supabase e vão na próxima rodada, então nada se perde. Se o script ficar parado, as fotos se acumulam no Supabase (1 GB grátis, uns 3 meses), por isso confira **Execuções** de vez em quando.
+
 ## Cuidados com o plano gratuito do Supabase
 
 - **Pausa por inatividade:** projeto gratuito sem nenhum uso por 7 dias é pausado. Com o posto lançando todo dia isso não acontece; se acontecer, é só clicar em **Restore** no painel do Supabase.
 - **Sem backup automático acessível:** no plano gratuito não há como restaurar uma cópia de dias anteriores. Faça uma **exportação para Excel** pelo painel toda semana (aba Abastecimentos → Exportar). Se o sistema virar essencial, o plano Pro (cerca de US$ 25/mês) tem backup diário.
-- **Espaço:** 500 MB, suficiente para muitos anos de abastecimentos.
+- **Espaço:** 500 MB de banco, suficiente para muitos anos de abastecimentos. As fotos têm 1 GB à parte. Os comprovantes saem dali para o Google Drive (passo 8); as outras fotos (chegada, fechamento, aferição e veículo) continuam no Supabase.
 
 ## Atualizar o app depois de instalado
 
@@ -122,3 +152,5 @@ Só é preciso instalar um APK novo quando mudar algo da "casca" do app: ícone,
 Quando o `supabase/schema.sql` mudar, rode o arquivo inteiro de novo no SQL Editor. Ele só cria o que falta e atualiza as regras; nenhum dado é apagado.
 
 Rode **antes** de publicar telas novas que dependam dele (por exemplo, o horário do turno): as telas novas chamam colunas e funções que só existem depois.
+
+Quando o banco passa a exigir algo novo do app (como a foto do comprovante), a versão antiga do app no celular deixa de conseguir lançar até se atualizar. Faça a troca num horário calmo: rode o SQL, publique, e no celular feche e abra o app duas vezes (a primeira baixa a versão nova, a segunda já abre com ela).

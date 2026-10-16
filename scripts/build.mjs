@@ -52,11 +52,12 @@ if (cfg.site && !/^https:\/\/[\w.-]+\/[\w./-]*$/.test(cfg.site)) { console.error
 if (!/^[\w.-]{1,40}$/.test(cfg.versao)) { console.error('VERSAO_WEB inválida.'); process.exit(1); }
 
 // Política de conteúdo: só scripts e estilos do próprio app; rede só para o Supabase do projeto
-// (fotos: imagens com link temporário do Storage do Supabase; atualização: versao.json no próprio site)
+// (fotos: imagens com link temporário do Storage do Supabase e miniaturas dos comprovantes no Google Drive;
+// atualização: versao.json no próprio site)
 const host = new URL(cfg.url).host;
 const site = cfg.site ? new URL(cfg.site).origin : '';
 const CSP = [
-  "default-src 'self'", "script-src 'self'", "style-src 'self'", `img-src 'self' data: blob: https://${host}`, "font-src 'self'",
+  "default-src 'self'", "script-src 'self'", "style-src 'self'", `img-src 'self' data: blob: https://${host} https://drive.google.com https://*.googleusercontent.com`, "font-src 'self'",
   `connect-src 'self' https://${host} wss://${host} ${site}`.trim(), "object-src 'none'", "base-uri 'none'", "form-action 'none'",
 ].join('; ');
 

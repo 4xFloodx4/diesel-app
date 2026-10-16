@@ -67,10 +67,10 @@ export async function enviarFotos(pasta, fotos) {
   return caminhos;
 }
 
-/** Links temporários (10 minutos) para o painel mostrar as fotos de um registro. */
+/** Links temporários (10 minutos) para o painel mostrar as fotos de um registro, na mesma ordem (null: arquivo não achado). */
 export async function linksDasFotos(caminhos) {
   if (!caminhos.length) return [];
   const { data, error } = await supabase.storage.from('fotos').createSignedUrls(caminhos, 600);
   if (error) throw new ErroApi(`Não foi possível abrir as fotos: ${error.message}`);
-  return data.map(d => d.signedUrl).filter(Boolean);
+  return data.map(d => d.signedUrl || null);
 }

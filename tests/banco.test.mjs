@@ -8,11 +8,11 @@ import { PGlite } from '@electric-sql/pglite';
 
 const SCHEMA = readFileSync(new URL('../supabase/schema.sql', import.meta.url), 'utf8');
 const SUPABASE = `
-  create role anon nologin; create role authenticated nologin;
+  create role anon nologin; create role authenticated nologin; create role service_role nologin;
   create schema auth;
   create function auth.jwt() returns jsonb language sql stable as
     $$ select coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb $$;
-  grant usage on schema auth, public to anon, authenticated;
+  grant usage on schema auth, public to anon, authenticated, service_role;
   grant execute on function auth.jwt() to anon, authenticated;
   -- O Supabase dá estas permissões por padrão; quem protege é o RLS e os revokes do schema.sql
   alter default privileges in schema public grant all on tables to anon, authenticated;
@@ -44,7 +44,15 @@ const dh = minutosAtras => {
 const reg = (min, extra = {}) => ({ uuid: randomUUID(), data_hora: dh(min), placa: 'ABC1D23', motorista: 'João da Silva',
   km: 150200, litros: 640, encerrante: 7071686, bomba: 1, desconto: true, ...extra });
 const foto = pasta => `${pasta}/${randomUUID()}.jpg`;
-const abastecer = (dados, s = sessao) => rpc(POSTO, 'registrar_abastecimento', { p_sessao: s, p_dados: dados });
+const abastecer = (dados, s = sessao, fotos = [foto('abastecimento')]) => rpc(POSTO, 'registrar_abastecimento', { p_sessao: s, p_dados: dados, p_fotos: fotos });
+// Apps Script do Google Drive: chama o banco com a chave service_role
+async function comoServico(sql, params = []) {
+  return db.transaction(async tx => {
+    await tx.query('set local role service_role');
+    await tx.query("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ role: 'service_role' })]);
+    return (await tx.query(sql, params)).rows;
+  });
+}
 
 before(async () => {
   db = new PGlite();
@@ -131,7 +139,7 @@ test('frentista entra com nome + PIN; PIN errado conta tentativas e bloqueia na 
 });
 
 test('sessão do frentista só vale no celular que fez login e cai quando o PIN muda', async () => {
-  await assert.rejects(rpc(CHEFE, 'registrar_abastecimento', { p_sessao: sessao, p_dados: reg(20) }), /Login do frentista expirou/);
+  await assert.rejects(rpc(CHEFE, 'registrar_abastecimento', { p_sessao: sessao, p_dados: reg(20), p_fotos: [foto('abastecimento')] }), /Login do frentista expirou/);
   await assert.rejects(abastecer(reg(20), 'token-inventado'), /Login do frentista expirou/);
   const outra = (await rpc(POSTO, 'entrar_frentista', { p_frentista_id: carlos, p_pin: '9153' })).sessao;
   await rpc(CHEFE, 'definir_pin', { p_frentista_id: carlos, p_pin: '6402' });
@@ -265,7 +273,7 @@ test('supervisor importa planilha de placa + nome: cria o que falta, vincula e a
   await assert.rejects(rpc(POSTO, 'importar_vinculos', { p_linhas: [{ placa: 'ABC1D23', motorista: 'JOAO DA SILVA' }] }), /Acesso negado/);
   const r = await rpc(CHEFE, 'importar_vinculos', { p_linhas: [
     { linha: 2, placa: 'def-4567', motorista: 'maria souza' },
-    { linha: 3, placa: 'JKL2M34', motorista: 'Pedro Novo' },          // placa e motorista novos: criados sem capacidade e sem CPF
+    { linha: 3, placa: 'JKL2M34', motorista: 'Pedro Novo' },          // placa e motorista novos: tanque de 1100 L e sem CPF
     { linha: 4, placa: 'ABC1D23', cpf: '111.444.777-35' },            // achado pelo CPF
     { linha: 5, placa: 'ABC1D23', motorista: 'João da Silva' },       // já vinculado: conta como certo e não duplica
     { linha: 6, placa: 'XX1', motorista: 'Fulano de Tal' },
@@ -274,8 +282,8 @@ test('supervisor importa planilha de placa + nome: cria o que falta, vincula e a
   ] });
   assert.deepEqual([r.ok, r.veiculos_novos, r.motoristas_novos], [4, 1, 1]);
   assert.deepEqual(r.erros, ['Linha 6: placa XX1 inválida', 'Linha 7: MARIA SOUZA já está cadastrado com outro CPF', 'Linha 8: falta o nome do motorista']);
-  const novo = (await db.query("select capacidade_l, criado_por from veiculos where placa = 'JKL2M34'")).rows[0];
-  assert.deepEqual(novo, { capacidade_l: null, criado_por: 'Planilha' });
+  const novo = (await db.query("select capacidade_l::float as capacidade_l, criado_por from veiculos where placa = 'JKL2M34'")).rows[0];
+  assert.deepEqual(novo, { capacidade_l: 1100, criado_por: 'Planilha' });
   const e = await rpc(POSTO, 'estado_posto');
   assert.deepEqual(e.veiculos.find(v => v.placa === 'ABC1D23').motoristas, ['JOAO DA SILVA', 'MARIA SOUZA']);
   assert.deepEqual(e.veiculos.find(v => v.placa === 'DEF4567').motoristas, ['JOAO DA SILVA', 'MARIA SOUZA']);
@@ -283,21 +291,20 @@ test('supervisor importa planilha de placa + nome: cria o que falta, vincula e a
   assert.equal((await como(CHEFE, "delete from veiculo_motoristas where placa = 'DEF4567' and motorista_id = (select id from motoristas where nome = 'MARIA SOUZA') returning placa")).length, 1);
 });
 
-test('placa e motorista da planilha: o frentista completa o tanque e o CPF no primeiro abastecimento', async () => {
+test('placa e motorista da planilha: o tanque já vem com 1100 L e o frentista completa o CPF no primeiro abastecimento', async () => {
   let e = await rpc(POSTO, 'estado_posto');
   const jkl = () => e.veiculos.find(v => v.placa === 'JKL2M34');
-  assert.equal(jkl().capacidade_l, null);
+  assert.equal(Number(jkl().capacidade_l), 1100);
   assert.deepEqual(jkl().motoristas, ['PEDRO NOVO']);
   assert.ok(e.motoristas_sem_cpf.includes('PEDRO NOVO'));
   assert.ok(!JSON.stringify(e).includes('11144477735'));   // continua sem mandar CPF para o celular
   const base = { placa: 'JKL2M34', motorista: 'Pedro Novo', km: 50000, litros: 10, encerrante: 512070.05, bomba: 2 };
-  await assert.rejects(abastecer(reg(0, base)), /tamanho do tanque/);
-  await assert.rejects(abastecer(reg(0, { ...base, capacidade: 400, cpf: '529.982.247-25' })), /outro motorista/);
-  await assert.rejects(abastecer(reg(0, { ...base, capacidade: 400, cpf: '111.111.111-12' })), /CPF do motorista inválido/);
-  const a = await abastecer(reg(0, { ...base, capacidade: 400, cpf: '123.456.789-09' }));
+  await assert.rejects(abastecer(reg(0, { ...base, cpf: '529.982.247-25' })), /outro motorista/);
+  await assert.rejects(abastecer(reg(0, { ...base, cpf: '111.111.111-12' })), /CPF do motorista inválido/);
+  const a = await abastecer(reg(0, { ...base, cpf: '123.456.789-09' }));
   assert.equal(a.status, 'Pronto', JSON.stringify(a.problemas));   // KM do lançamento vira o primeiro da placa
   e = await rpc(POSTO, 'estado_posto');
-  assert.equal(Number(jkl().capacidade_l), 400);
+  assert.equal(Number(jkl().capacidade_l), 1100);
   assert.ok(!e.motoristas_sem_cpf.includes('PEDRO NOVO'));
   assert.equal((await db.query("select cpf from motoristas where nome = 'PEDRO NOVO'")).rows[0].cpf, '12345678909');
 });
@@ -325,7 +332,7 @@ test('frentista corrige tanque e KM do caminhão: vale na hora, o KM vira o pont
   const igual = await abastecer({ ...reg(0, { ...base, km: 1200, encerrante: 512080.05 }), data_hora: dh(-2) });
   assert.equal(igual.status, 'Pronto', JSON.stringify(igual.problemas));
   const aud = (await db.query("select detalhes from auditoria where acao = 'veiculo.corrigido' and entidade_id = 'JKL2M34' order by id")).rows.map(x => x.detalhes);
-  assert.deepEqual(aud.map(d => [d.frentista, d.capacidade, d.km]), [['Ana Ribeiro', [400, 450], null], ['Ana Ribeiro', null, [null, 1200]]]);
+  assert.deepEqual(aud.map(d => [d.frentista, d.capacidade, d.km]), [['Ana Ribeiro', [1100, 450], null], ['Ana Ribeiro', null, [null, 1200]]]);
 });
 
 test('preço do diesel: o frentista atualiza, o lançamento usa e grava o valor; aferições vêm com o nome de quem fez', async () => {
@@ -353,6 +360,41 @@ test('preço do diesel: o frentista atualiza, o lançamento usa e grava o valor;
   assert.deepEqual(e.afericoes_recentes.map(x => [x.bomba, Number(x.diferenca_l)]).sort(), [[1, 0.15], [2, 0.05]]);
 });
 
+test('todo abastecimento exige uma foto do comprovante com o visor da bomba', async () => {
+  const d = reg(3, { km: 150500, litros: 20, encerrante: 7071706 });
+  await assert.rejects(abastecer(d, sessao, []), /foto do comprovante/);
+  await assert.rejects(abastecer(d, sessao, [foto('abastecimento'), foto('abastecimento')]), /foto do comprovante/);
+  await assert.rejects(abastecer(d, sessao, [foto('chegada')]), /Foto inválida/);
+  assert.equal((await db.query('select count(*)::int as n from abastecimentos where uuid = $1', [d.uuid])).rows[0].n, 0);
+  const f = foto('abastecimento');
+  const a = await abastecer(d, sessao, [f]);
+  assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'abastecimento', p_chave: String(a.id) }))[0].caminho, f);
+  assert.equal((await abastecer(d, sessao, [foto('abastecimento')])).id, a.id);   // reenvio devolve o já gravado
+  await rpc(CHEFE, 'decidir_abastecimento', { p_id: a.id, p_acao: 'cancelar', p_motivo: 'Teste da foto' });   // não entra nas contas dos outros testes
+});
+
+test('comprovantes vão para o Google Drive: só o Apps Script (service_role) lê a fila e marca o que foi copiado', async () => {
+  await assert.rejects(como(POSTO, 'select fotos_para_drive(10)'), /permission denied/);
+  await assert.rejects(como(CHEFE, "select foto_no_drive('x', 'y', 'z', true)"), /permission denied/);
+  const fila = (await comoServico('select fotos_para_drive(100) as r'))[0].r;
+  assert.ok(fila.length >= 1);
+  assert.ok(fila.every(x => /^abastecimento\//.test(x.caminho) && /^[A-Z]{3}\d/.test(x.placa) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(x.data_hora)));
+  const [x] = fila;
+  const marcar = (id, url, fora) => comoServico('select foto_no_drive($1, $2, $3, $4)', [x.caminho, id, url, fora]);
+  await assert.rejects(marcar('../x', 'https://drive.google.com/file/d/abc/view', false), /ID do Drive inválido/);
+  await assert.rejects(marcar('1AbCdEfGhIjKlMn', 'https://exemplo.com/x', false), /Link do Drive inválido/);
+  const url = 'https://drive.google.com/file/d/1AbCdEfGhIjKlMn/view';
+  await marcar('1AbCdEfGhIjKlMn', url, false);   // copiado, mas ainda não apagado do Storage: continua na fila
+  let nova = (await comoServico('select fotos_para_drive(100) as r'))[0].r;
+  assert.equal(nova.find(y => y.caminho === x.caminho).drive_id, '1AbCdEfGhIjKlMn');
+  await marcar('1AbCdEfGhIjKlMn', url, true);    // apagado do Storage: sai da fila
+  nova = (await comoServico('select fotos_para_drive(100) as r'))[0].r;
+  assert.ok(!nova.some(y => y.caminho === x.caminho));
+  const [vista] = await rpc(CHEFE, 'fotos_de', { p_entidade: 'abastecimento', p_chave: String(x.abastecimento) });
+  assert.deepEqual([vista.drive_url, vista.no_storage], [url, false]);
+  await assert.rejects(db.exec(`update fotos set entidade = 'chegada' where caminho = '${x.caminho}'`), /não pode ser alterada/);
+});
+
 // ---------- Chegada, fechamento e fotos ----------
 test('chegada com data no futuro ou antiga é recusada', async () => {
   await assert.rejects(rpc(POSTO, 'registrar_chegada', { p_sessao: sessao, p_dados: { uuid: randomUUID(), tanque: 'TQ01', data_hora: dh(-120), nf: '7', litros: 100 } }), /no futuro/);
@@ -374,7 +416,7 @@ test('chegada e fechamento guardam fotos; caminho de foto fora do padrão é rec
   // depois do fechamento, nada mais entra com a data do dia
   await assert.rejects(abastecer(reg(1, { km: 150900, litros: 10, encerrante: 7071910 })), /já foi fechado/);
   await assert.rejects(rpc(POSTO, 'registrar_chegada', { p_sessao: sessao, p_dados: { uuid: randomUUID(), tanque: 'TQ01', data_hora: dh(1), nf: '9', litros: 10 } }), /já foi fechado/);
-  await assert.rejects(db.exec('update fotos set chave = chave'), /não pode ser alterada/);
+  await assert.rejects(db.exec("update fotos set chave = chave || 'x'"), /não pode ser alterada/);
 });
 
 test('supervisor não move lançamento para um dia já fechado', async () => {

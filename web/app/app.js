@@ -45,8 +45,10 @@ const dataHoraCurta = iso => iso ? new Date(iso).toLocaleString('pt-BR', { day: 
 // A bomba não vem marcada: o frentista escolhe a cada lançamento (só vem marcada se o posto tiver uma bomba só)
 // placa/motorista: o que foi escolhido da lista; placaTxt/motoristaTxt: o que o frentista está digitando
 // capacidade/cpf: só quando a placa ou o motorista ainda não têm isso no cadastro
+// fotos: a foto do comprovante junto com o visor da bomba (obrigatória, uma só; vai para o Google Drive)
+const TANQUE_PADRAO = '1100';   // tanque de caminhão novo já vem com 1100 L (o banco usa o mesmo padrão)
 const novoForm = () => ({ bomba: estado?.bombas?.length === 1 ? estado.bombas[0].numero : null, placa: '', motorista: '', placaTxt: '', motoristaTxt: '',
-  capacidade: '', cpf: '',
+  capacidade: TANQUE_PADRAO, cpf: '', fotos: [],
   hora: horaAgora(), km: '', litros: '', enc: '', obs: '', desconto: null, justificativa: '', justHorario: '' });
 
 // ---------- Busca de placa e motorista (o frentista digita o começo e toca na sugestão) ----------
@@ -136,6 +138,7 @@ function conferir(f) {
   if (foraDoTurno(f.hora) && f.justHorario.trim().length < 5) bloqueios.push('Fora do horário do turno: escreva a justificativa.');
   if (precisaCapacidade(f) && !(parseNum(f.capacidade) > 0 && parseNum(f.capacidade) < 5000)) bloqueios.push('Informe o tamanho do tanque do veículo.');
   if (precisaCpf(f) && !cpfValido(f.cpf)) bloqueios.push('Informe o CPF do motorista.');
+  if (f.fotos.length !== 1) bloqueios.push('Tire a foto do comprovante junto com o visor da bomba.');
   const cap = v?.capacidade_l ?? (parseNum(f.capacidade) > 0 ? parseNum(f.capacidade) : null);
   const regras = [];
   // Igual ao banco: maior que o último lançado (desde a última correção de KM); igual ao KM do cadastro vale
@@ -304,11 +307,11 @@ function campoMotorista() {
 }
 
 // Botão Limpar (só aparece quando há algo preenchido) e a confirmação na própria tela
-const temAlgoPreenchido = () => [form.placaTxt, form.motoristaTxt, form.km, form.litros, form.enc, form.obs, form.justificativa, form.justHorario, form.capacidade, form.cpf]
-  .some(x => String(x || '').trim()) || form.desconto !== null || !!form.usarPreco;
+const temAlgoPreenchido = () => [form.placaTxt, form.motoristaTxt, form.km, form.litros, form.enc, form.obs, form.justificativa, form.justHorario, form.cpf]
+  .some(x => String(x || '').trim()) || form.desconto !== null || !!form.usarPreco || form.fotos.length > 0;
 function blocoLimpar() {
   if (confirmaLimpar) {
-    return `<div class="confirma" role="alertdialog" aria-label="Confirmar limpeza">Apagar placa, motorista, KM, litros, encerrante e o resto do que foi preenchido? A bomba e a hora ficam.
+    return `<div class="confirma" role="alertdialog" aria-label="Confirmar limpeza">Apagar placa, motorista, KM, litros, encerrante, a foto e o resto do que foi preenchido? A bomba e a hora ficam.
       <div class="acoes"><button class="btn ghost small" type="button" data-acao="limpar-nao">Cancelar</button><button class="btn warn small" type="button" data-acao="limpar-sim">Limpar</button></div></div>`;
   }
   return `<div class="form-cab"><span class="secao">Novo abastecimento</span>${temAlgoPreenchido() ? '<button class="btn ghost small" type="button" data-acao="limpar">Limpar</button>' : ''}</div>`;
@@ -379,6 +382,8 @@ function telaAbastecer() {
       </div>
       ${semDesconto ? `<label class="lbl" for="f-just">Por que não foi descontado? (o supervisor precisa autorizar)</label>
         <textarea id="f-just" rows="2" maxlength="500">${esc(form.justificativa)}</textarea>` : ''}</div>
+    ${form.fotos.length ? '' : '<p class="hint">Tire a foto do comprovante do abastecimento junto com o visor da bomba, com os números legíveis.</p>'}
+    ${blocoFotos(form.fotos, 'abastecimento', 1, 1)}
     ${c.bloqueios.length ? `<p class="hint">${c.bloqueios.map(esc).join(' ')}</p>` : ''}
     ${botaoEnviar('enviar', semDesconto || fora ? 'Pedir autorização ao supervisor' : falha ? 'Enviar para o supervisor' : 'Enviar abastecimento', pode,
       semDesconto || fora || falha ? 'warn' : '')}`;
@@ -663,7 +668,7 @@ conteudo.addEventListener('click', async e => {
   if (acao === 'tentar') await carregar();
   if (acao === 'trocar-google') { await sair(); conta = null; estado = null; semAcesso = false; login = null; gravar('frentistaLogin', null); render(); }
   // o cadastro já vem com o que o frentista digitou na busca
-  if (acao === 'novo-veiculo') { tela = 'veiculo'; novoVeiculo = { placa: soPlaca(form.placaTxt), capacidade: '', km: '', fotos: [] }; aviso = null; render(); }
+  if (acao === 'novo-veiculo') { tela = 'veiculo'; novoVeiculo = { placa: soPlaca(form.placaTxt), capacidade: TANQUE_PADRAO, km: '', fotos: [] }; aviso = null; render(); }
   if (acao === 'novo-motorista') { tela = 'motorista'; novoMotorista = { nome: form.motoristaTxt.trim().toUpperCase(), cpf: '' }; aviso = null; render(); }
   if (acao === 'voltar') { tela = null; aviso = null; render(); }
   if (acao === 'atualizar') await executar(atualizarEstado);
@@ -685,6 +690,7 @@ conteudo.addEventListener('click', async e => {
   if (acao === 'limpar-nao') { confirmaLimpar = false; render(); }
   if (acao === 'limpar-sim') {
     const { bomba, hora } = form;
+    soltarFotos(form.fotos);
     form = { ...novoForm(), bomba, hora }; confirmaLimpar = false; editPreco = null;
     aviso = { tipo: 'info', texto: 'Formulário limpo. A bomba e a hora ficaram.' }; render();
   }
@@ -711,12 +717,14 @@ $('sair').addEventListener('click', async () => {
   render();
 });
 
-const listaDeFotos = dono => ({ chegada: fotosChegada, fechamento: fotosFechamento, afericao: fotosAfericao, veiculo: novoVeiculo?.fotos }[dono]);
+const listaDeFotos = dono => ({ chegada: fotosChegada, fechamento: fotosFechamento, afericao: fotosAfericao, veiculo: novoVeiculo?.fotos,
+  abastecimento: form?.fotos }[dono]);
+const soltarFotos = lista => (lista || []).forEach(x => URL.revokeObjectURL(x.previa));
 
 async function adicionarFoto(dono) {
   try {
     const f = await tirarFoto();
-    if (f) { const lista = listaDeFotos(dono); if (dono === 'veiculo') lista.length = 0; lista.push(f); }
+    if (f) { const lista = listaDeFotos(dono); if (dono === 'veiculo' || dono === 'abastecimento') { soltarFotos(lista); lista.length = 0; } lista.push(f); }
   } catch (err) { aviso = { tipo: 'warn', texto: err.message }; }
   render();
 }
@@ -751,6 +759,9 @@ async function teclarPin(tecla) {
 async function enviarAbastecimento() {
   const c = conferir(form);
   if (c.bloqueios.length) return;
+  // a foto sobe uma vez só: se o envio do lançamento falhar (rede), o reenvio usa o mesmo arquivo
+  const [foto] = form.fotos;
+  if (!foto.caminho) [foto.caminho] = await enviarFotos('abastecimento', [foto]);
   const dados = {
     uuid: form.uuid || (form.uuid = crypto.randomUUID()), data_hora: `${hojeISO()}T${form.hora}:00`, placa: form.placa, motorista: form.motorista,
     km: Math.round(parseNum(form.km)), litros: parseNum(form.litros), encerrante: parseNum(form.enc), bomba: form.bomba,
@@ -759,11 +770,12 @@ async function enviarAbastecimento() {
     capacidade: precisaCapacidade(form) ? parseNum(form.capacidade) : null, cpf: precisaCpf(form) ? form.cpf.replace(/\D/g, '') : null,
     preco: form.usarPreco && estado.preco_diesel ? Number(estado.preco_diesel.preco) : null,
   };
-  const r = await rpc('registrar_abastecimento', { p_sessao: login.sessao, p_dados: dados });
+  const r = await rpc('registrar_abastecimento', { p_sessao: login.sessao, p_dados: dados, p_fotos: [foto.caminho] });
   aviso = r.status === 'Aguardando autorização' ? { tipo: 'warn', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: aguardando autorização do supervisor.` }
     : r.status === 'Exceção' ? { tipo: 'warn', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: foi para o supervisor conferir.` }
     : { tipo: 'ok', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: lançado.` };
   await atualizarEstado();
+  soltarFotos(form.fotos);
   form = novoForm();   // próxima vez, o frentista escolhe a bomba de novo
   confirmaLimpar = false; editPreco = null;
 }
