@@ -505,6 +505,9 @@ const mL = x => `${Number(x) > 0 ? '+' : ''}${nf(Number(x) * 1000, 0)} mL`;
 // ---------- Tanques e fechamentos ----------
 const botaoAtivo = (tabela, chave, id, campo, ativo) =>
   `<button class="btn small ghost" type="button" data-acao="alternar" data-tabela="${tabela}" data-chave="${chave}" data-id="${esc(id)}" data-campo="${campo}" data-valor="${!ativo}">${ativo ? 'Desativar' : 'Reativar'}</button>`;
+// Excluir cadastro (supervisor e administrador): os lançamentos guardam placa, nome e CPF escritos neles, então o histórico fica
+const botaoExcluir = (tabela, chave, id) =>
+  `<button class="btn small warn" type="button" data-acao="excluir" data-tabela="${tabela}" data-chave="${chave}" data-id="${esc(id)}">Excluir</button>`;
 const botaoEditar = (tabela, id) => `<button class="btn small ghost" type="button" data-acao="editar" data-tabela="${tabela}" data-id="${esc(id)}">Editar</button>`;
 let nCampo = 0;
 const rotulo = (rot, controle) => { const id = `cp-${++nCampo}`; return `<div class="field"><label class="lbl" for="${id}">${rot}</label>${controle.replace(/^<(\w+)/, `<$1 id="${id}"`)}</div>`; };
@@ -547,7 +550,7 @@ TELAS.tanques = async () => {
     <div class="duas">
       <section class="painel"><header><h2>Tanques</h2><span>${c.tanques.length} cadastrado(s)</span></header>
         <div class="tabela"><table><thead><tr><th>Tanque</th><th class="n">Capacidade</th><th class="n">Saldo inicial</th><th></th></tr></thead><tbody>
-          ${c.tanques.map(t => `<tr><td>${esc(t.codigo)}</td><td class="n">${nf(t.capacidade_l, 0)}</td><td class="n">${nf(t.saldo_inicial, 0)}</td><td>${botaoEditar('tanques', t.codigo)}</td></tr>`).join('')}</tbody></table></div>
+          ${c.tanques.map(t => `<tr><td>${esc(t.codigo)}</td><td class="n">${nf(t.capacidade_l, 0)}</td><td class="n">${nf(t.saldo_inicial, 0)}</td><td><div class="acoes">${botaoEditar('tanques', t.codigo)}${botaoExcluir('tanques', 'codigo', t.codigo)}</div></td></tr>`).join('')}</tbody></table></div>
         <div class="corpo"><form class="formulario" data-form="tanques">
           ${campo('Código', 'codigo', 'required maxlength="20"')}${campo('Capacidade (L)', 'capacidade_l', 'class="num" inputmode="decimal" required')}
           ${campo('Saldo inicial (L)', 'saldo_inicial', 'class="num" inputmode="decimal" required')}<button class="btn small" type="submit">Salvar tanque</button></form>
@@ -555,7 +558,7 @@ TELAS.tanques = async () => {
       <section class="painel"><header><h2>Bombas</h2><span>${c.bombas.length} cadastrada(s)</span></header>
         <div class="tabela"><table><thead><tr><th class="n">Bomba</th><th>Tanque</th><th class="n">Encerrante inicial</th><th>Ativa</th><th>Última aferição</th><th></th></tr></thead><tbody>
           ${c.bombas.map(b => `<tr><td class="n">${esc(b.numero)}</td><td>${esc(b.tanque)}</td><td class="n">${nf(b.encerrante_inicial, 3)}</td><td>${b.ativa ? 'Sim' : 'Não'}</td>
-            <td>${b.ativa ? chipAfericao(ultimaAfericao(r.af, b.numero)) : ''}</td><td>${botaoEditar('bombas', b.numero)}</td></tr>`).join('')}</tbody></table></div>
+            <td>${b.ativa ? chipAfericao(ultimaAfericao(r.af, b.numero)) : ''}</td><td><div class="acoes">${botaoEditar('bombas', b.numero)}${botaoExcluir('bombas', 'numero', b.numero)}</div></td></tr>`).join('')}</tbody></table></div>
         <div class="corpo"><form class="formulario" data-form="bombas">
           ${campo('Número', 'numero', 'class="num" inputmode="numeric" required')}
           ${rotulo('Tanque', `<select name="tanque">${c.tanques.map(t => `<option>${esc(t.codigo)}</option>`).join('')}</select>`)}
@@ -655,7 +658,8 @@ TELAS.veiculos = async () => {
           <td class="quebra">${(porPlaca[v.placa] || []).map(x => `<span class="vinculo">${esc(x.motoristas?.nome || '')}<button type="button" class="link" data-acao="desvincular"
             data-id="${esc(v.placa)}" data-motorista="${esc(x.motorista_id)}" aria-label="Tirar ${esc(x.motoristas?.nome || '')} da placa ${esc(v.placa)}">×</button></span>`).join(' ')}</td>
           <td><div class="acoes">${botaoEditar('veiculos', v.placa)}${botaoFotos('veiculo', v.placa, `Veículo ${v.placa}`, c.fv[v.placa])}
-            <button class="btn small ghost" type="button" data-acao="foto-veiculo" data-id="${esc(v.placa)}">+ Foto</button></div></td></tr>`).join('')}</tbody></table></div></section>
+            <button class="btn small ghost" type="button" data-acao="foto-veiculo" data-id="${esc(v.placa)}">+ Foto</button>${botaoExcluir('veiculos', 'placa', v.placa)}</div></td></tr>`).join('')}</tbody></table></div>
+        <div class="corpo"><p class="hint">Placa errada? Exclua e cadastre a certa. Os abastecimentos já lançados continuam no histórico com a placa que tinham.</p></div></section>
       <section class="painel"><header><h2>Motoristas</h2><span>${c.motoristas.length} cadastrado(s)</span></header>
         <div class="corpo"><form class="formulario" data-form="motoristas">
           ${campo('Nome completo', 'nome', 'required maxlength="120" autocomplete="off"')}${campo('CPF', 'cpf', 'class="num" inputmode="numeric" required maxlength="14" autocomplete="off"')}
@@ -663,7 +667,8 @@ TELAS.veiculos = async () => {
           <p class="hint">Ao editar um motorista, digite o CPF completo de novo (na lista ele aparece mascarado).</p></div>
         <div class="tabela"><table><thead><tr><th>Nome</th><th>CPF</th><th>Ativo</th><th></th></tr></thead><tbody>
         ${c.motoristas.map(m => `<tr><td>${esc(m.nome)}<span class="sub">${esc(m.criado_por || 'Painel')}</span></td><td class="num">${m.cpf ? mascaraCpf(m.cpf) : '<span class="chip pend">a informar</span>'}</td><td>${m.ativo ? 'Sim' : 'Não'}</td>
-          <td>${botaoEditar('motoristas', m.id)}</td></tr>`).join('')}</tbody></table></div></section>
+          <td><div class="acoes">${botaoEditar('motoristas', m.id)}${botaoExcluir('motoristas', 'id', m.id)}</div></td></tr>`).join('')}</tbody></table></div>
+        <div class="corpo"><p class="hint">Excluir tira o motorista das listas do app; os abastecimentos dele continuam no histórico, com nome e CPF.</p></div></section>
     </div>`;
 };
 
@@ -869,8 +874,8 @@ document.addEventListener('click', async e => {
     const r = await agir(() => consulta(supabase.from(tabela).update({ [col]: valor === 'true' }).eq(chave, id).select()));
     if (r?.length) { avisar('Atualizado.'); abrir(est.tela, { semCarregando: true }); } else if (r) avisar('Nada foi alterado: sem permissão para esse registro.', 'warn');
   } else if (acao === 'excluir') {
-    if (!['frentistas', 'acessos'].includes(tabela)) return;
-    if (!confirmarDuasVezes('Clique de novo para excluir')) return;
+    if (!['frentistas', 'acessos', 'veiculos', 'motoristas', 'tanques', 'bombas'].includes(tabela)) return;
+    if (!confirmarDuasVezes(['veiculos', 'motoristas'].includes(tabela) ? 'Clique de novo (o histórico fica)' : 'Clique de novo para excluir')) return;
     const r = await agir(() => consulta(supabase.from(tabela).delete().eq(chave, id).select()));
     if (r?.length) { avisar('Excluído.'); abrir(est.tela, { semCarregando: true }); } else if (r) avisar('Nada foi excluído: sem permissão para esse registro.', 'warn');
   }

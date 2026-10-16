@@ -447,3 +447,24 @@ test('horário do turno: só o administrador altera, e o celular recebe', async 
   assert.ok((await db.query("select 1 from auditoria where acao = 'cadastro.configuracoes.update'")).rows.length);
   await db.exec("update configuracoes set abertura = '00:00', fechamento = '23:59:59'");
 });
+
+test('supervisor e administrador excluem placa e motorista errados; o histórico continua', async () => {
+  const historico = sql => db.query(sql).then(r => r.rows.length);
+  const antesPlaca = await historico("select 1 from abastecimentos where placa = 'GHI8J90'");
+  const antesMotorista = await historico("select 1 from abastecimentos where motorista = 'PEDRO NOVO' and cpf = '12345678909'");
+  assert.ok(antesPlaca > 0 && antesMotorista > 0);
+  // celular não exclui cadastro
+  assert.equal((await como(POSTO, "delete from veiculos where placa = 'GHI8J90' returning placa")).length, 0);
+  assert.equal((await como(CHEFE, "delete from veiculos where placa = 'GHI8J90' returning placa")).length, 1);
+  assert.equal((await como(DONO, "delete from motoristas where nome = 'PEDRO NOVO' returning id")).length, 1);
+  // os lançamentos ficam como estavam (placa, nome e CPF escritos neles) e o vínculo sai junto
+  assert.equal(await historico("select 1 from abastecimentos where placa = 'GHI8J90'"), antesPlaca);
+  assert.equal(await historico("select 1 from abastecimentos where motorista = 'PEDRO NOVO' and cpf = '12345678909'"), antesMotorista);
+  assert.equal(await historico("select 1 from veiculo_motoristas vm join motoristas m on m.id = vm.motorista_id where m.nome = 'PEDRO NOVO'"), 0);
+  const e = await rpc(POSTO, 'estado_posto');
+  assert.ok(!e.veiculos.some(v => v.placa === 'GHI8J90') && !e.motoristas.includes('PEDRO NOVO'));
+  assert.ok(await historico("select 1 from auditoria where acao = 'cadastro.veiculos.delete' and entidade_id = 'GHI8J90'"));
+  // bomba com aferição e tanque com movimento não saem (desativar em vez de excluir)
+  await assert.rejects(como(CHEFE, 'delete from bombas where numero = 2'), /foreign key/);
+  await assert.rejects(como(CHEFE, "delete from tanques where codigo = 'TQ01'"), /foreign key/);
+});

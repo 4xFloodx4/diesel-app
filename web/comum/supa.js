@@ -32,6 +32,9 @@ function traduzir(error) {
   if (/violates foreign key constraint/.test(msg) && /frentistas/.test(msg)) {
     return new ErroApi('Este frentista já tem lançamentos e não pode ser excluído. Desative em vez de excluir.');
   }
+  if (/violates foreign key constraint/.test(msg) && /"(tanques|bombas)"/.test(msg)) {
+    return new ErroApi('Este tanque ou bomba já tem movimento (bomba ligada, chegada, fechamento ou aferição) e não pode ser excluído. Desative a bomba em vez de excluir.');
+  }
   if (/duplicate key value/.test(msg)) return new ErroApi('Já existe um cadastro com esse nome ou código.');
   if (error?.code === '42501' || /Acesso negado|permission denied/i.test(msg)) {
     return new ErroApi('Esta conta não tem acesso. Peça ao supervisor para liberar.', false, true);
