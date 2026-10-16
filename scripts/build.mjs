@@ -14,15 +14,27 @@ import { fileURLToPath } from 'node:url';
 const RAIZ = join(dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = join(RAIZ, 'web');
 const local = existsSync(join(RAIZ, 'config.local.json')) ? JSON.parse(readFileSync(join(RAIZ, 'config.local.json'), 'utf8')) : {};
+// Tolera os deslizes comuns ao colar: espaços, barra no final, letras maiúsculas no endereço
+const limpar = v => String(v || '').trim().replace(/^["']|["']$/g, '').trim();
 const cfg = {
-  url: process.env.SUPABASE_URL || local.SUPABASE_URL || '',
-  chave: process.env.SUPABASE_ANON_KEY || local.SUPABASE_ANON_KEY || '',
-  esquema: process.env.APP_ESQUEMA || local.APP_ESQUEMA || 'br.com.ritmolog.diesel',
+  url: limpar(process.env.SUPABASE_URL || local.SUPABASE_URL).replace(/\/+$/, '').toLowerCase(),
+  chave: limpar(process.env.SUPABASE_ANON_KEY || local.SUPABASE_ANON_KEY),
+  esquema: limpar(process.env.APP_ESQUEMA || local.APP_ESQUEMA) || 'br.com.ritmolog.diesel',
 };
 const demo = process.argv.includes('--demo');
 if (demo) Object.assign(cfg, { url: 'https://demonstracao.supabase.co', chave: 'demonstracao' });
-if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(cfg.url) || !cfg.chave) {
-  console.error('Configure SUPABASE_URL (https://xxxx.supabase.co) e SUPABASE_ANON_KEY. Veja docs/CONFIGURAR.md.');
+const problemas = [];
+if (!cfg.url) problemas.push('SUPABASE_URL está vazia. No GitHub ela deve estar em Settings > Secrets and variables > Actions > aba "Variables" (não em "Secrets").');
+else if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(cfg.url)) problemas.push(`SUPABASE_URL deve ser como https://xxxx.supabase.co (recebido: "${cfg.url}").`);
+if (!cfg.chave) problemas.push('SUPABASE_ANON_KEY está vazia. Mesma tela, aba "Variables".');
+else if (!demo && !/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(cfg.chave) && !/^sb_publishable_[\w-]+$/.test(cfg.chave)) {
+  problemas.push(`SUPABASE_ANON_KEY não parece a chave "anon public" (tem ${cfg.chave.length} caracteres; ela começa com "eyJ" ou "sb_publishable_").`);
+}
+if (!demo && /service_role/.test(Buffer.from(cfg.chave.split('.')[1] || '', 'base64').toString())) {
+  problemas.push('A chave informada é a "service_role" (secreta). Troque pela "anon public" e, por segurança, gere uma nova service_role no Supabase.');
+}
+if (problemas.length) {
+  console.error('Configuração incompleta:\n- ' + problemas.join('\n- ') + '\nVeja docs/CONFIGURAR.md, passo 4.');
   process.exit(1);
 }
 if (!/^[a-z][a-z0-9.]+$/.test(cfg.esquema)) { console.error('APP_ESQUEMA inválido.'); process.exit(1); }
