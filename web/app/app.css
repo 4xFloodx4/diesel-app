@@ -75,20 +75,101 @@ html, body { height: 100%; }
 .fora { background: var(--hora-fundo); border-radius: 10px; padding: 10px 12px; }
 .fora .chip { align-self: flex-start; background: var(--placa); }
 
-/* Login do frentista */
+/* Entrada: abertura, nomes, PIN e boas-vindas */
+.abertura { text-align: center; align-items: center; margin-top: 40px; }
+.abertura .hint { font-size: 14px; }
+.marca { width: 72px; height: 72px; display: block; }
+.google { display: inline-flex; align-items: center; justify-content: center; gap: 10px; width: 100%; }
+.google .g { width: 18px; height: 18px; }
 .login { text-align: center; }
-.nomes { display: grid; gap: 10px; }
-.nomes button { min-height: 60px; border-radius: 10px; border: 1px solid var(--risco-forte); background: var(--placa); cursor: pointer;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
-.nomes b { font: 600 19px var(--f-titulo); }
+.avatar { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; flex: none; font: 700 16px var(--f-titulo); color: #fff; background: var(--cor, var(--diesel)); }
+.avatar.grande { width: 72px; height: 72px; font-size: 26px; }
+.nomes { display: grid; gap: 8px; }
+.nomes button { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 12px; min-height: 64px; text-align: left;
+  border-radius: 12px; border: 1px solid var(--risco-forte); background: var(--placa); color: var(--tinta); cursor: pointer; transition: transform .12s, border-color .15s; }
+.nomes button:active { transform: scale(.98); }
+.nomes button.ultimo { border-color: var(--diesel); box-shadow: 0 0 0 3px var(--diesel-fundo); }
+.nomes .quem { min-width: 0; }
+.nomes b { font: 600 18px var(--f-titulo); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nomes small { color: var(--tinta-3); font-size: 12px; }
+.nomes .seta { color: var(--tinta-3); font-size: 20px; }
 .nomes button:disabled { opacity: .55; cursor: not-allowed; }
-.pin { display: flex; justify-content: center; gap: 16px; margin: 8px 0; }
-.pin span { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--tinta-3); }
+.pin-tela { align-items: center; gap: 12px; margin-top: 12px; }
+.quem-pin { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.pin { display: flex; justify-content: center; gap: 18px; margin: 4px 0 2px; }
+.pin span { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--tinta-3); transition: background .15s, border-color .15s; }
 .pin span.cheio { background: var(--diesel); border-color: var(--diesel); }
+.pin.erro span { background: var(--alerta); border-color: var(--alerta); }
+.pin.certo span { background: var(--ok); border-color: var(--ok); }
+.msg-pin { min-height: 20px; font-size: 13.5px; font-weight: 500; color: var(--alerta); }
 .teclado { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 300px; margin: 0 auto; width: 100%; }
-.teclado button { min-height: 64px; border-radius: 12px; border: 1px solid var(--risco-forte); background: var(--placa); font: 500 26px var(--f-num); cursor: pointer; }
-.teclado button:active { background: var(--placa-2); }
+.teclado button { min-height: 62px; border-radius: 14px; border: 1px solid var(--risco-forte); background: var(--placa); color: var(--tinta); font: 500 26px var(--f-num); cursor: pointer; transition: background .1s, transform .08s; }
+.teclado button:active { background: var(--diesel-fundo); transform: scale(.95); }
+.teclado button.mudo { font: 500 15px var(--f-texto); color: var(--tinta-2); }
+.ola { align-items: center; text-align: center; margin-top: 32px; }
+.check { width: 76px; height: 76px; }
+.check circle { fill: var(--ok-fundo); }
+.check path { fill: none; stroke: var(--ok); stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 60; stroke-dashoffset: 0; }
+.resumo-turno { width: 100%; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.resumo-turno div { display: flex; justify-content: space-between; gap: 10px; padding: 9px 12px; background: var(--placa); border: 1px solid var(--risco); border-radius: 10px; font-size: 13.5px; }
+.resumo-turno b { font-family: var(--f-num); font-weight: 500; }
+.resumo-turno .lembrete { background: var(--pend-fundo); color: var(--pend); border-color: transparent; }
+.barra { width: 100%; height: 3px; background: var(--risco); border-radius: 3px; overflow: hidden; }
+.barra i { display: block; height: 100%; width: 100%; background: var(--diesel); transform-origin: left; }
+
+/* Transições: só quando a tela muda (a classe "animar" sai no render seguinte); nada se o celular pediu menos movimento */
+@media (prefers-reduced-motion: no-preference) {
+  .conteudo.entra-frente { animation: entra-frente .34s cubic-bezier(.2, .8, .2, 1); }
+  .conteudo.entra-tras { animation: entra-tras .34s cubic-bezier(.2, .8, .2, 1); }
+  .conteudo.entra-suave { animation: entra-suave .22s ease-out; }
+  @keyframes entra-frente { from { opacity: 0; transform: translateX(26px); } }
+  @keyframes entra-tras { from { opacity: 0; transform: translateX(-26px); } }
+  @keyframes entra-suave { from { opacity: .2; } }
+  .conteudo.animar .cascata > :not(.nomes):not(.resumo-turno), .conteudo.animar .cascata .nomes > *, .conteudo.animar .resumo-turno > * {
+    animation: sobe .4s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 45ms + 60ms); }
+  @keyframes sobe { from { opacity: 0; transform: translateY(10px); } }
+  .conteudo.animar .quem-pin .avatar { animation: cresce .42s cubic-bezier(.2, 1.4, .4, 1) both; }
+  @keyframes cresce { from { opacity: 0; transform: scale(.6); } }
+  .pin span.novo { animation: pop .22s cubic-bezier(.2, 1.6, .4, 1); }
+  @keyframes pop { 50% { transform: scale(1.35); } }
+  .pin.erro { animation: treme .42s; }
+  @keyframes treme { 20%, 60% { transform: translateX(-9px); } 40%, 80% { transform: translateX(9px); } }
+  .conteudo.animar .check path { animation: traco .5s .15s ease-out both; }
+  @keyframes traco { from { stroke-dashoffset: 60; } }
+  .conteudo.animar .barra i { animation: enche 2.4s linear both; }
+  @keyframes enche { from { transform: scaleX(0); } }
+  .abertura .gota { animation: gota 1.6s ease-in-out infinite; }
+  @keyframes gota { 50% { transform: translateY(3px); } }
+  .abas.sobe { animation: abas-sobem .35s cubic-bezier(.2, .8, .2, 1); }
+  @keyframes abas-sobem { from { transform: translateY(100%); } }
+  .confirma, .sugestao-preco { animation: desce .22s ease-out; }
+  @keyframes desce { from { opacity: 0; transform: translateY(-6px); } }
+}
+
+/* Limpar o formulário e preço do diesel */
+.form-cab { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; }
+.form-cab .secao { margin: 0; }
+.confirma, .sugestao-preco { border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; font-size: 13.5px; font-weight: 500; }
+.confirma { border: 1px solid var(--alerta); background: var(--alerta-fundo); color: var(--alerta); }
+.sugestao-preco { border: 1px solid var(--diesel); background: var(--diesel-fundo); color: var(--tinta); }
+.confirma .acoes, .sugestao-preco .acoes { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.usar-preco { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 46px; padding: 8px 12px; text-align: left; cursor: pointer;
+  border: 1px dashed var(--diesel); border-radius: 8px; background: var(--placa); color: var(--tinta); font: 500 14px var(--f-texto); }
+.usar-preco b { font-family: var(--f-num); font-weight: 600; color: var(--diesel); }
+.usar-preco[aria-pressed="true"] { border-style: solid; background: var(--diesel-fundo); font-weight: 600; }
+.linha-preco { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; }
+.total { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 12px; border-radius: 10px; background: var(--placa); border: 1px solid var(--risco); }
+.total b { font-size: 20px; font-weight: 600; }
+
+/* Histórico de aferições */
+.historico { display: flex; flex-direction: column; gap: 6px; }
+.af { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 9px 11px; border-radius: 10px; background: var(--placa); border: 1px solid var(--risco); font-size: 13px; }
+.af .dif { font-family: var(--f-num); font-weight: 600; text-align: right; }
+.af .dif.ok { color: var(--ok); }
+.af .dif.alerta { color: var(--alerta); }
+.af .quem { display: flex; align-items: center; gap: 6px; color: var(--tinta-2); min-width: 0; }
+.af .avatar { width: 20px; height: 20px; font-size: 9px; }
+.af .quando { color: var(--tinta-3); font-family: var(--f-num); font-size: 12px; text-align: right; }
 
 /* Desconto */
 .desconto { background: var(--placa); border: 1px solid var(--risco); border-radius: 10px; padding: 10px 12px; }

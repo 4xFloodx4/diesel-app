@@ -105,6 +105,10 @@ export function descrever(e, ctx = {}) {
     case 'frentista.pin_definido':
       tipo = 'cadastro'; frase = `definiu um <b>PIN novo</b> para <b>${esc((ctx.frentistas || {})[e.entidade_id] || `frentista ${e.entidade_id}`)}</b>.`; break;
     case 'foto.excluida': tipo = 'cadastro'; frase = `excluiu uma foto (${esc(e.entidade)} ${id}).`; break;
+    case 'preco.alterado':
+      tipo = 'cadastro';
+      frase = `atualizou o preço do diesel${d.antes != null ? ` de <b>R$ ${esc(valorSimples(d.antes))}</b>` : ''} para <b>R$ ${esc(valorSimples(d.depois))}</b> por litro${d.origem === 'chegada' ? ' (pela NF da chegada)' : ''}.`;
+      break;
     case 'veiculo.corrigido': {
       tipo = 'cadastro';
       const partes = [d.capacidade && `tanque de <b>${esc(valorSimples(d.capacidade[0]))}</b> para <b>${esc(valorSimples(d.capacidade[1]))} L</b>`,

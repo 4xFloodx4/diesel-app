@@ -1,7 +1,8 @@
 // Planilha no layout do importador "Abastecimento interno" do KMM (ImportaAbastecimento, KMM 3.23.1).
 // Linha 1 = cabeçalho; dados a partir da linha 2; 12 colunas nesta ordem. Cabeçalho igual ao modelo oficial
 // "Modelo Importacao Abastecimento Interno.xls". CNPJ Filial e Produto ficam vazios (o KMM usa o que for
-// escolhido no assistente). Valor unitário, valor total e cupom podem ser 0.
+// escolhido no assistente). Valor unitário e valor total vêm do preço usado no lançamento (0 se não teve preço);
+// cupom vai 0.
 
 export const COLUNAS = [
   'Data Transação', 'Nº Requisição', 'Nº Cupom', 'CNPJ Filial', 'Placa', 'CPF Motorista',
@@ -33,9 +34,9 @@ export function planilhaKMM(XLSX, linhas) {
     cel(4, { t: 's', v: String(l.placa) });
     cel(5, { t: 's', v: String(l.cpf), z: '@' });     // texto: preserva zeros à esquerda
     cel(6, { t: 'n', v: Number(l.km) });
-    cel(8, { t: 'n', v: 0 });
+    cel(8, { t: 'n', v: Number(l.preco) || 0 });
     cel(9, { t: 'n', v: Number(l.litros) });
-    cel(10, { t: 'n', v: 0 });
+    cel(10, { t: 'n', v: Number(l.valor_total) || 0 });
     cel(11, { t: 'n', v: Number(l.bomba) });
   });
   ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: linhas.length, c: COLUNAS.length - 1 } });

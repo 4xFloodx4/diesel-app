@@ -264,6 +264,9 @@ alter table abastecimentos add column if not exists autorizado_por text;
 alter table abastecimentos add column if not exists autorizado_em timestamptz;
 alter table abastecimentos add column if not exists fora_horario boolean not null default false;
 alter table abastecimentos add column if not exists justificativa_horario text check (length(justificativa_horario) <= 500);
+-- Preço do litro usado no lançamento (o frentista toca em "usar o preço atual"); vai para a planilha do KMM
+alter table abastecimentos add column if not exists preco_litro numeric(8, 3) check (preco_litro > 0 and preco_litro < 100);
+alter table abastecimentos add column if not exists valor_total numeric(12, 2) generated always as (round(litros * preco_litro, 2)) stored;
 alter table abastecimentos drop constraint if exists abastecimentos_status_check;
 alter table abastecimentos add constraint abastecimentos_status_check check (status in
   ('Aguardando autorização', 'Pronto', 'Exceção', 'Em lote', 'Lançado', 'Erro', 'Cancelado'));
@@ -327,6 +330,17 @@ create table if not exists afericoes (
   recebido_em          timestamptz not null default now()
 );
 create index if not exists ix_afer_bomba on afericoes (bomba, data_hora);
+
+-- Preço do litro do diesel: o atual é o último registrado. O frentista altera no app (ele recebe o diesel e vê a NF).
+-- Cada mudança fica guardada, com quem mudou e de onde veio (digitado no app ou sugerido pela NF da chegada).
+create table if not exists precos_diesel (
+  id            bigint generated always as identity primary key,
+  preco         numeric(8, 3) not null check (preco > 0 and preco < 100),
+  origem        text not null default 'app' check (origem in ('app', 'chegada', 'painel')),
+  frentista_id  bigint references frentistas (id),
+  conta         text not null,
+  criado_em     timestamptz not null default now()
+);
 
 -- Fotos (os arquivos ficam no Storage, bucket "fotos"; aqui fica a qual registro cada uma pertence)
 create table if not exists fotos (
@@ -694,6 +708,12 @@ begin
     'tanques', calcular_fechamento(v_hoje),
     'turno', (select jsonb_build_object('abertura', to_char(abertura, 'HH24:MI'), 'fechamento', to_char(fechamento, 'HH24:MI'))
                 from configuracoes where id = 1),
+    'preco_diesel', (select jsonb_build_object('preco', p.preco, 'em', p.criado_em, 'por', f.nome, 'origem', p.origem)
+                       from precos_diesel p left join frentistas f on f.id = p.frentista_id order by p.id desc limit 1),
+    -- histórico das aferições na aba Aferir, com quem fez
+    'afericoes_recentes', coalesce((select jsonb_agg(x order by x.data_hora desc) from (
+        select a.bomba, a.data_hora, a.visor_l, a.diferenca_l, f.nome as frentista from afericoes a join frentistas f on f.id = a.frentista_id
+         order by a.data_hora desc limit 12) x), '[]'),
     'fechado_hoje', exists (select 1 from fechamentos where data = v_hoje),
     'hoje', coalesce((select jsonb_agg(jsonb_build_object(
         'id', a.id, 'uuid', a.uuid, 'data_hora', a.data_hora, 'placa', a.placa, 'motorista', a.motorista, 'km', a.km,
@@ -736,7 +756,7 @@ declare
   r jsonb := p_dados; v_ex abastecimentos; c jsonb; v_id bigint; v_status text;
   v_dh timestamp; v_km integer; v_lt numeric; v_enc numeric; v_bomba integer; v_frent bigint;
   v_desconto boolean; v_just text; v_fora boolean; v_just_h text; v_c configuracoes;
-  v_veic veiculos; v_mot motoristas; v_cap numeric; v_cpf text;
+  v_veic veiculos; v_mot motoristas; v_cap numeric; v_cpf text; v_preco numeric;
 begin
   perform exigir(array['posto', 'supervisor']);
   v_frent := frentista_da_sessao(p_sessao);
@@ -759,6 +779,8 @@ begin
   if not v_desconto and (v_just is null or length(v_just) < 5) then
     raise exception 'Sem o desconto do motorista, escreva a justificativa para o supervisor.' using errcode = '22023';
   end if;
+  v_preco := (r ->> 'preco')::numeric;
+  if v_preco is not null and (v_preco <= 0 or v_preco >= 100) then raise exception 'Preço do litro inválido.' using errcode = '22023'; end if;
   perform validar_data_lancamento(v_dh);
   v_fora := fora_do_turno(v_dh);
   v_just_h := nullif(trim(coalesce(r ->> 'justificativa_horario', '')), '');
@@ -790,11 +812,11 @@ begin
   v_status := case when v_desconto and not v_fora then c ->> 'status' else 'Aguardando autorização' end;
   insert into abastecimentos (uuid, data_hora, placa, motorista, cpf, km, litros, encerrante, encerrante_anterior,
                               bomba, tanque, status, problemas, obs_frentista, frentista_id, conta,
-                              desconto_confirmado, justificativa_desconto, fora_horario, justificativa_horario)
+                              desconto_confirmado, justificativa_desconto, fora_horario, justificativa_horario, preco_litro)
   values ((r ->> 'uuid')::uuid, v_dh, c ->> 'placa', c ->> 'motorista', c ->> 'cpf', v_km, v_lt, v_enc,
           (c ->> 'encerrante_anterior')::numeric, v_bomba, c ->> 'tanque', v_status, c -> 'problemas',
           left(nullif(trim(r ->> 'obs'), ''), 500), v_frent, meu_email(), v_desconto, left(v_just, 500),
-          v_fora, case when v_fora then left(v_just_h, 500) end)
+          v_fora, case when v_fora then left(v_just_h, 500) end, v_preco)
   on conflict (uuid) do nothing
   returning id into v_id;
   if v_id is null then   -- mesmo envio gravado ao mesmo tempo por outra conexão
@@ -941,6 +963,23 @@ begin
   insert into veiculos (placa, capacidade_l, km_inicial, ativo, criado_por) values (v_placa, p_capacidade, p_km, true, 'Frentista: ' || v_nome);
   perform registrar_fotos('veiculo', v_placa, array[p_foto], v_frent);
   return jsonb_build_object('placa', v_placa);
+end $$;
+
+-- O frentista atualiza o preço do litro do diesel (vale para os próximos lançamentos de todos). Origem: 'app' (digitado)
+-- ou 'chegada' (sugerido pela NF da chegada de diesel). Fica guardado com quem mudou.
+create or replace function definir_preco_diesel(p_sessao text, p_preco numeric, p_origem text default 'app') returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_frent bigint; v_antes numeric; v_nome text;
+begin
+  perform exigir(array['posto', 'supervisor']);
+  v_frent := frentista_da_sessao(p_sessao);
+  if p_preco is null or p_preco < 0.5 or p_preco >= 100 then raise exception 'Preço do litro inválido.' using errcode = '22023'; end if;
+  if p_origem not in ('app', 'chegada') then raise exception 'Origem inválida.' using errcode = '22023'; end if;
+  select preco into v_antes from precos_diesel order by id desc limit 1;
+  select nome into v_nome from frentistas where id = v_frent;
+  insert into precos_diesel (preco, origem, frentista_id, conta) values (round(p_preco, 3), p_origem, v_frent, meu_email());
+  perform auditar('preco.alterado', 'precos_diesel', null, jsonb_build_object('antes', v_antes, 'depois', round(p_preco, 3), 'origem', p_origem, 'frentista', v_nome));
+  return jsonb_build_object('preco', round(p_preco, 3), 'por', v_nome);
 end $$;
 
 -- O frentista corrige o tamanho do tanque ou o KM atual de um caminhão já cadastrado. Muda na hora e fica no histórico
@@ -1135,7 +1174,7 @@ language plpgsql stable security definer set search_path = public as $$
 begin
   perform exigir(array['supervisor']);
   return coalesce((select jsonb_agg(jsonb_build_object('requisicao', id, 'data_hora', data_hora, 'placa', placa, 'cpf', cpf,
-                   'km', km, 'litros', litros, 'bomba', bomba) order by data_hora, id)
+                   'km', km, 'litros', litros, 'bomba', bomba, 'preco', preco_litro, 'valor_total', valor_total) order by data_hora, id)
                    from abastecimentos where lote_id = p_lote), '[]');
 end $$;
 
@@ -1221,7 +1260,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['acessos', 'frentistas', 'frentistas_pin', 'sessoes_frentista', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques',
-                           'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'fotos', 'auditoria', 'configuracoes'] loop
+                           'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'auditoria', 'configuracoes'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon', t);
     execute format('drop policy if exists supervisor_le on %I', t);
@@ -1229,7 +1268,7 @@ begin
   end loop;
   -- Leitura pelo painel (PINs, sessões e auditoria têm regra própria)
   foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'bombas',
-                           'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'fotos', 'configuracoes'] loop
+                           'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'configuracoes'] loop
     execute format('create policy supervisor_le on %I for select to authenticated using (sou_gestor())', t);
   end loop;
   -- Cadastros: supervisor e administrador editam direto (com histórico automático pelos gatilhos)
@@ -1285,7 +1324,7 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frent
   registrar_abastecimento(text, jsonb), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[]),
   registrar_afericao(text, jsonb, text[]),
   cadastrar_veiculo_app(text, text, numeric, integer, text), cadastrar_motorista_app(text, text, text),
-  corrigir_veiculo_app(text, text, numeric, integer),
+  corrigir_veiculo_app(text, text, numeric, integer), definir_preco_diesel(text, numeric, text),
   definir_pin(bigint, text), decidir_autorizacao(bigint, boolean, text), importar_vinculos(jsonb),
   decidir_abastecimento(bigint, text, text, jsonb), marcar_erro_kmm(bigint, text),
   gerar_lote(), linhas_lote(bigint), fechar_lote(bigint, text), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)

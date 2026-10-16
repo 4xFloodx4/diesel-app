@@ -28,7 +28,19 @@ let form = null, chegada = null, medidos = {}, fotosChegada = [], fotosFechament
 let afericao = { bomba: null, visor: '' }, fotosAfericao = [];
 let novoVeiculo = null, novoMotorista = null, correcao = null;   // correcao: {placa, capacidade, km} do caminhão já cadastrado
 let escolhido = null, pin = '';          // tela de login do frentista
+let pinEstado = '';                      // '' | 'erro' (pontos tremem) | 'certo' (pontos verdes)
+let boasVindas = false, timerBoasVindas = null;   // tela de boas-vindas logo depois do PIN
+let ultimaChave = null;                  // última tela mostrada, para a transição entre telas
+let confirmaLimpar = false, editPreco = null, sugestaoPreco = null;   // limpar o formulário; atualizar o preço do diesel
 let guia = 'frentista';
+
+// Inicial do nome num círculo colorido (a cor sai do nome, então é sempre a mesma para a mesma pessoa)
+const CORES_AVATAR = ['#b86a07', '#3b5f8a', '#2f7a4f', '#6b4fa0', '#a8442a', '#2c6f73', '#7a5a12'];
+const corAvatar = nome => CORES_AVATAR[[...String(nome)].reduce((s, c) => (s * 31 + c.charCodeAt(0)) >>> 0, 7) % CORES_AVATAR.length];
+const iniciais = nome => String(nome || '').trim().split(/\s+/).map(p => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+const avatar = (nome, grande = false) => `<span class="avatar${grande ? ' grande' : ''}" style="--cor:${corAvatar(nome)}" aria-hidden="true">${esc(iniciais(nome))}</span>`;
+const reais = n => `R$ ${Number(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })}`;
+const dataHoraCurta = iso => iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '') : '';
 
 // A bomba não vem marcada: o frentista escolhe a cada lançamento (só vem marcada se o posto tiver uma bomba só)
 // placa/motorista: o que foi escolhido da lista; placaTxt/motoristaTxt: o que o frentista está digitando
@@ -182,12 +194,19 @@ function blocoFotos(lista, dono, minimo = 0, maximo = MAX_FOTOS) {
       ${lista.length < maximo ? `<button type="button" class="nova-foto" data-foto="${dono}">+ Tirar foto</button>` : ''}</div></div>`;
 }
 
+const MARCA = `<svg class="marca" viewBox="0 0 72 72" aria-hidden="true"><rect width="72" height="72" rx="18" fill="#b86a07"/>
+  <rect x="19" y="15" width="25" height="41" rx="4" fill="#fff"/><rect x="23.5" y="20" width="16" height="10.5" rx="2" fill="#b86a07"/>
+  <path d="M44 42h8V24" stroke="#fff" stroke-width="3.6" fill="none" stroke-linecap="round"/><path class="gota" d="M52 24c0 0-3 3.5-3 5.5a3 3 0 0 0 6 0C55 27.5 52 24 52 24z" fill="#f6e6cc"/>
+  <rect x="15" y="54" width="32" height="4.5" rx="2.2" fill="#fff"/></svg>`;
+const G = `<svg class="g" viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.6 9.2c0-.6-.1-1.2-.2-1.8H9v3.4h4.8a4.1 4.1 0 0 1-1.8 2.7v2.2h2.9c1.7-1.6 2.7-3.9 2.7-6.5z"/><path fill="#34A853" d="M9 18c2.4 0 4.5-.8 6-2.2l-2.9-2.2c-.8.5-1.8.9-3.1.9-2.4 0-4.4-1.6-5.1-3.8H.9v2.3A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.9 10.7a5.4 5.4 0 0 1 0-3.4V5H.9a9 9 0 0 0 0 8z"/><path fill="#EA4335" d="M9 3.6c1.3 0 2.5.5 3.5 1.4l2.6-2.6A9 9 0 0 0 .9 5l3 2.3C4.6 5.2 6.6 3.6 9 3.6z"/></svg>`;
+
 function telaGoogle() {
-  return `<div class="centro">
-    <h1>Celular do posto</h1>
-    <p class="hint">Entre uma vez com a conta Google do posto. Depois, cada frentista entra com o próprio nome e PIN.</p>
-    ${avisoHtml()}
-    <button class="btn" type="button" data-acao="google">Entrar com Google</button></div>`;
+  return `<div class="centro abertura cascata">
+    <span style="--i:0">${MARCA}</span>
+    <h1 style="--i:1">Celular do posto</h1>
+    <p class="hint" style="--i:2">Entre uma vez com a conta Google do posto. Depois, cada frentista entra com o próprio nome e PIN.</p>
+    <div style="--i:3">${avisoHtml()}</div>
+    <button class="btn google" type="button" data-acao="google" style="--i:4">${G}Entrar com Google</button></div>`;
 }
 
 function telaSemAcesso() {
@@ -207,24 +226,49 @@ function telaSemRede() {
 function telaLoginFrentista() {
   const lista = estado.frentistas;
   if (!escolhido) {
-    return `<div class="centro login">
-      <h1>Quem está no posto?</h1>
-      ${avisoHtml()}
-      <div class="nomes">${lista.length ? lista.map(f => `<button type="button" data-frentista="${f.id}" ${f.tem_pin ? '' : 'disabled'}>
-        <b>${esc(f.nome)}</b>${f.tem_pin ? '' : '<small>sem PIN: peça ao supervisor</small>'}</button>`).join('')
+    // quem entrou por último neste celular vem primeiro e destacado
+    const ultimo = ler('ultimoFrentista', null);
+    const ordem = [...lista].sort((a, b) => (b.id === ultimo) - (a.id === ultimo));
+    return `<div class="centro login cascata">
+      <h1 style="--i:0">Quem está no posto?</h1>
+      <p class="hint" style="--i:1">Toque no seu nome.</p>
+      <div style="--i:1">${avisoHtml()}</div>
+      <div class="nomes">${ordem.length ? ordem.map((f, i) => `<button type="button" class="${f.id === ultimo && f.tem_pin ? 'ultimo' : ''}" data-frentista="${f.id}" style="--i:${i + 2}" ${f.tem_pin ? '' : 'disabled'}>
+        ${avatar(f.nome)}<span class="quem"><b>${esc(f.nome)}</b><small>${!f.tem_pin ? 'sem PIN: peça ao supervisor' : f.id === ultimo ? 'último a entrar neste celular' : 'frentista'}</small></span>
+        <span class="seta" aria-hidden="true">›</span></button>`).join('')
         : '<p class="hint">Nenhum frentista cadastrado. O supervisor cadastra no painel.</p>'}</div>
-      <button class="link" type="button" data-acao="trocar-google">Sair da conta Google do celular</button></div>`;
+      <button class="link" type="button" data-acao="trocar-google" style="--i:${ordem.length + 2}">Sair da conta Google do celular</button></div>`;
   }
   const f = lista.find(x => x.id === escolhido);
-  return `<div class="centro login">
-    <h1>${esc(f?.nome || '')}</h1>
-    <p class="hint">Digite seu PIN de 4 números.</p>
-    ${avisoHtml()}
-    <div class="pin" aria-label="PIN digitado">${[0, 1, 2, 3].map(i => `<span class="${i < pin.length ? 'cheio' : ''}"></span>`).join('')}</div>
+  return `<div class="centro login pin-tela">
+    <div class="quem-pin">${avatar(f?.nome || '', true)}<h1>${esc(f?.nome || '')}</h1><p class="hint">Digite seu PIN de 4 números.</p></div>
+    <div class="pin ${pinEstado}" aria-label="PIN digitado">${[0, 1, 2, 3].map(i => `<span class="${i < pin.length ? 'cheio' : ''}${i === pin.length - 1 && !pinEstado ? ' novo' : ''}"></span>`).join('')}</div>
+    <div class="msg-pin" role="status">${aviso ? esc(aviso.texto) : enviando ? 'Conferindo…' : ''}</div>
     <div class="teclado">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => `<button type="button" data-tecla="${n}">${n}</button>`).join('')}
-      <button type="button" data-tecla="voltar" aria-label="Voltar">‹</button><button type="button" data-tecla="0">0</button><button type="button" data-tecla="apagar" aria-label="Apagar">⌫</button></div>
-    ${enviando ? '<p class="hint">Conferindo…</p>' : ''}</div>`;
+      <button type="button" class="mudo" data-tecla="voltar" aria-label="Voltar para a lista de nomes">‹ Voltar</button><button type="button" data-tecla="0">0</button>
+      <button type="button" class="mudo" data-tecla="apagar" aria-label="Apagar">⌫</button></div></div>`;
 }
+
+// Logo depois do PIN: confirmação e um resumo do turno; abre a tela de abastecer sozinha
+function telaBoasVindas() {
+  const h = new Date().getHours(), oi = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
+  const vencidas = estado.bombas.filter(b => b.afericao_vencida).map(b => b.numero);
+  const p = estado.preco_diesel;
+  const linhas = [
+    ['Turno', `${esc(estado.turno?.abertura || '')} – ${esc(estado.turno?.fechamento || '')}`],
+    ...estado.bombas.map(b => [`Bomba ${b.numero} · encerrante`, nf(b.encerrante_anterior, 0)]),
+    p ? ['Preço do diesel', `${reais(p.preco)}/L`] : null,
+  ].filter(Boolean);
+  return `<div class="centro ola cascata">
+    <svg class="check" viewBox="0 0 76 76" aria-hidden="true" style="--i:0"><circle cx="38" cy="38" r="38"/><path d="M24 39l9 9 19-20"/></svg>
+    <h1 style="--i:1">${oi}, ${esc(String(login.nome).split(' ')[0])}</h1>
+    <div class="resumo-turno">${linhas.map(([a, b], i) => `<div style="--i:${i + 2}"><span>${esc(a)}</span><b>${b}</b></div>`).join('')}
+      ${estado.fechado_hoje ? `<div class="lembrete" style="--i:${linhas.length + 2}"><span>O turno de hoje já foi fechado</span></div>` : ''}
+      ${vencidas.length ? `<div class="lembrete" style="--i:${linhas.length + 2}"><span>Aferição da${vencidas.length > 1 ? 's bombas' : ' bomba'} ${vencidas.join(' e ')} vencida</span><span>aba Aferir</span></div>` : ''}</div>
+    <div class="barra" style="--i:${linhas.length + 3}"><i></i></div>
+    <button class="link" type="button" data-acao="abrir-app" style="--i:${linhas.length + 4}">Abrir agora</button></div>`;
+}
+function fecharBoasVindas() { clearTimeout(timerBoasVindas); if (!boasVindas) return; boasVindas = false; render(); }
 
 const SEM_TECLADO_ESPERTO = 'autocomplete="off" autocorrect="off" spellcheck="false"';
 function campoPlaca(v) {
@@ -259,6 +303,33 @@ function campoMotorista() {
       : '<button class="link esq" type="button" data-acao="novo-motorista">+ Motorista não está na lista</button>'}</div>`;
 }
 
+// Botão Limpar (só aparece quando há algo preenchido) e a confirmação na própria tela
+const temAlgoPreenchido = () => [form.placaTxt, form.motoristaTxt, form.km, form.litros, form.enc, form.obs, form.justificativa, form.justHorario, form.capacidade, form.cpf]
+  .some(x => String(x || '').trim()) || form.desconto !== null || !!form.usarPreco;
+function blocoLimpar() {
+  if (confirmaLimpar) {
+    return `<div class="confirma" role="alertdialog" aria-label="Confirmar limpeza">Apagar placa, motorista, KM, litros, encerrante e o resto do que foi preenchido? A bomba e a hora ficam.
+      <div class="acoes"><button class="btn ghost small" type="button" data-acao="limpar-nao">Cancelar</button><button class="btn warn small" type="button" data-acao="limpar-sim">Limpar</button></div></div>`;
+  }
+  return `<div class="form-cab"><span class="secao">Novo abastecimento</span>${temAlgoPreenchido() ? '<button class="btn ghost small" type="button" data-acao="limpar">Limpar</button>' : ''}</div>`;
+}
+// Preço do litro: tocar para usar o atual; "atualizar" muda o preço do posto (vale para todos, fica com o nome do frentista)
+function blocoPreco() {
+  const p = estado.preco_diesel, lt = parseNum(form.litros);
+  const novo = editPreco ? parseNum(editPreco.valor) : NaN, novoOk = novo >= 0.5 && novo < 100;
+  return `<div class="field preco"><span class="lbl">Preço do litro</span>
+    ${p ? `<button type="button" class="usar-preco" data-acao="usar-preco" aria-pressed="${!!form.usarPreco}">
+        <span>${form.usarPreco ? '✓ Usando o preço atual' : 'Usar o preço atual'}</span><b>${reais(p.preco)}/L</b></button>
+      <span class="hint">Atualizado em ${esc(dataHoraCurta(p.em))}${p.por ? ` por ${esc(p.por)}` : ''}${p.origem === 'chegada' ? ' (pela NF da chegada)' : ''}.</span>`
+      : '<span class="hint">O preço do diesel ainda não foi informado.</span>'}
+    ${editPreco ? `<div class="linha-preco"><input id="f-preco-novo" class="num" inputmode="decimal" placeholder="Ex.: 6,19" aria-label="Novo preço do litro" value="${esc(editPreco.valor)}">
+        <button class="btn small" type="button" data-acao="salvar-preco" ${novoOk && !enviando ? '' : 'disabled'}>Salvar</button>
+        <button class="btn ghost small" type="button" data-acao="cancelar-preco">Cancelar</button></div>
+      <span class="hint">O preço novo vale para os próximos lançamentos de todos os frentistas e fica registrado com o seu nome.</span>`
+      : `<button class="link esq" type="button" data-acao="alterar-preco">${p ? 'O preço mudou? Atualizar' : 'Informar o preço'}</button>`}
+    ${form.usarPreco && p && lt > 0 ? `<div class="total"><span class="lbl">Valor total</span><b class="num">${reais(Math.round(lt * p.preco * 100) / 100)}</b></div>` : ''}</div>`;
+}
+
 function telaAbastecer() {
   if (estado.fechado_hoje) return avisoHtml() + diaFechado();
   if (!estado.bombas.length) return '<p class="hint">Nenhuma bomba cadastrada. Peça ao supervisor.</p>';
@@ -273,6 +344,7 @@ function telaAbastecer() {
   const variosTanques = new Set(estado.bombas.map(b => b.tanque)).size > 1;
   return `
     ${avisoHtml()}${avisoFechamento()}${avisoAfericao()}
+    ${blocoLimpar()}
     <div class="field"><span class="lbl">Em qual bomba foi o abastecimento?</span><div class="bombas">
       ${estado.bombas.map(b => `<button type="button" data-bomba="${b.numero}" aria-pressed="${b.numero === form.bomba}"><b>${b.numero}</b>
         <small>${variosTanques ? `${esc(b.tanque)} · ` : ''}enc. ${nf(b.encerrante_anterior)}</small></button>`).join('')}
@@ -291,6 +363,7 @@ function telaAbastecer() {
       <div class="field"><label class="lbl" for="f-litros">Litros (visor)</label><input id="f-litros" class="num" inputmode="decimal" value="${esc(form.litros)}"></div>
       <div class="field"><label class="lbl" for="f-enc">Encerrante final</label><input id="f-enc" class="num" inputmode="decimal" value="${esc(form.enc)}"></div>
     </div>
+    ${blocoPreco()}
     ${form.bomba == null ? '<div class="medidor"><span>Encerrante anterior</span><span class="v">escolha a bomba</span></div>'
       : `<div class="medidor"><span>Encerrante anterior (bomba ${form.bomba})</span><span class="v">${nf(ea)}</span>
       <span>Saída pelo encerrante</span><span class="v grande">${enc > ea ? nf(enc - ea) + ' L' : '–'}</span></div>`}
@@ -386,8 +459,12 @@ function telaChegada() {
   const f = chegada, l = parseNum(f.litros), sub = parseNum(f.depois) - parseNum(f.antes);
   const okRegua = l > 0 && sub > 0 && Math.abs(sub - l) <= LIM.tolTanque;
   const pode = f.tanque && f.nf.trim() && l > 0 && /^\d{2}:\d{2}$/.test(f.hora);
+  const s = sugestaoPreco, atual = estado.preco_diesel;
   return `
     ${avisoHtml()}
+    ${s ? `<div class="sugestao-preco">A NF ${esc(s.nf)} dá <b>${reais(s.preco)}</b> por litro${atual ? `; o preço atual é ${reais(atual.preco)}` : ''}. Atualizar o preço do diesel?
+      <div class="acoes"><button class="btn ghost small" type="button" data-acao="ignorar-preco">Agora não</button>
+        <button class="btn small" type="button" data-acao="preco-da-nf" ${enviando ? 'disabled' : ''}>Atualizar para ${reais(s.preco)}</button></div></div>` : ''}
     <div class="row2">
       <div class="field"><label class="lbl" for="c-tanque">Tanque</label><select id="c-tanque">${estado.tanques.map(t => `<option ${t.tanque === f.tanque ? 'selected' : ''}>${esc(t.tanque)}</option>`).join('')}</select></div>
       <div class="field"><label class="lbl" for="c-hora">Hora</label><input id="c-hora" type="time" value="${esc(f.hora)}"></div>
@@ -414,8 +491,20 @@ function telaChegada() {
     ${botaoEnviar('chegada', 'Registrar chegada', pode)}`;
 }
 
+// Últimas aferições, com quem fez (acima de 100 mL fica vermelho)
+function historicoAfericoes() {
+  const lista = estado.afericoes_recentes || [];
+  if (!lista.length) return '<div class="secao">Últimas aferições</div><p class="hint">Nenhuma aferição registrada ainda.</p>';
+  return `<div class="secao">Últimas aferições</div><div class="historico">${lista.map(a => {
+    const dif = Number(a.diferenca_l);
+    return `<div class="af"><span><b>Bomba ${esc(a.bomba)}</b> · visor ${nf(a.visor_l, 3)} L</span>
+      <span class="dif ${Math.abs(dif) > LIM.tolAfericao ? 'alerta' : 'ok'}">${dif > 0 ? '+' : ''}${nf(dif * 1000, 0)} mL</span>
+      <span class="quem">${avatar(a.frentista)}${esc(a.frentista)}</span><span class="quando">${esc(dataHoraCurta(a.data_hora))}</span></div>`;
+  }).join('')}</div>`;
+}
+
 function telaAfericao() {
-  if (estado.fechado_hoje) return avisoHtml() + diaFechado();
+  if (estado.fechado_hoje) return avisoHtml() + diaFechado() + historicoAfericoes();
   if (!estado.bombas.length) return '<p class="hint">Nenhuma bomba cadastrada. Peça ao supervisor.</p>';
   const f = afericao, v = parseNum(f.visor), dif = v - 20;
   const pode = f.bomba != null && v >= 15 && v <= 25 && fotosAfericao.length > 0;
@@ -434,7 +523,8 @@ function telaAfericao() {
       ? `Diferença de ${ml(dif)}: dentro da tolerância (até 100 mL).` : `Diferença de ${ml(dif)}: acima da tolerância. O supervisor vai receber um alerta.`}</li></ul>` : ''}
     ${fotosAfericao.length ? '' : '<p class="hint">Tire a foto da medida cheia junto com o visor da bomba.</p>'}
     ${blocoFotos(fotosAfericao, 'afericao', 1, 3)}
-    ${botaoEnviar('aferir', 'Registrar aferição', pode)}`;
+    ${botaoEnviar('aferir', 'Registrar aferição', pode)}
+    ${historicoAfericoes()}`;
 }
 
 function telaFechar() {
@@ -472,23 +562,42 @@ function telaAjuda() {
     <p class="hint">Conta do celular: ${esc(conta)}</p>`;
 }
 
+// Transição entre telas: só quando a tela muda (digitar não repete a animação). Avançar desliza da direita,
+// voltar da esquerda; trocar de aba só esmaece.
+const NIVEL_TELA = ['google', 'semacesso', 'carregando', 'semrede', 'nomes', 'pin', 'ola'];
+const nivelTela = k => (k.startsWith('aba:') ? 7 : k.startsWith('sub:') ? 8 : NIVEL_TELA.indexOf(k));
+function animarTroca(chave) {
+  conteudo.classList.remove('animar', 'entra-frente', 'entra-tras', 'entra-suave');
+  if (chave === ultimaChave) return;
+  const tipo = !ultimaChave || (chave.startsWith('aba:') && ultimaChave.startsWith('aba:')) ? 'entra-suave'
+    : nivelTela(chave) >= nivelTela(ultimaChave) ? 'entra-frente' : 'entra-tras';
+  void conteudo.offsetWidth;   // reinicia a animação
+  conteudo.classList.add('animar', tipo);
+  conteudo.scrollTop = 0;
+  ultimaChave = chave;
+}
+
 function render(manterFoco) {
   const foco = manterFoco && document.activeElement?.id;
   const pos = foco && document.activeElement.selectionStart;
   const logado = conta && estado && !semAcesso && login;
-  $('abas').hidden = !logado || !!tela;
-  $('sair').hidden = !logado;
-  $('subtitulo').textContent = logado ? login.nome : '';
-  let html;
-  if (!conta) html = telaGoogle();
-  else if (semAcesso) html = telaSemAcesso();
-  else if (!estado) html = semRede ? telaSemRede() : '<p class="hint">Carregando…</p>';
-  else if (!login) html = telaLoginFrentista();
-  else if (tela === 'veiculo') html = telaNovoVeiculo();
-  else if (tela === 'motorista') html = telaNovoMotorista();
-  else if (tela === 'corrigir') html = telaCorrigirVeiculo();
-  else html = { abastecer: telaAbastecer, turno: telaTurno, chegada: telaChegada, aferir: telaAfericao, fechar: telaFechar, ajuda: telaAjuda }[aba]();
+  const abas = $('abas'), abasEscondidas = !logado || !!tela || boasVindas;
+  if (abas.hidden && !abasEscondidas) { abas.classList.remove('sobe'); void abas.offsetWidth; abas.classList.add('sobe'); }
+  abas.hidden = abasEscondidas;
+  $('sair').hidden = !logado || boasVindas;
+  $('subtitulo').textContent = logado ? login.nome : conta && estado && !semAcesso ? 'Celular do posto' : '';
+  let html, chave;
+  if (!conta) { html = telaGoogle(); chave = 'google'; }
+  else if (semAcesso) { html = telaSemAcesso(); chave = 'semacesso'; }
+  else if (!estado) { html = semRede ? telaSemRede() : '<p class="hint">Carregando…</p>'; chave = semRede ? 'semrede' : 'carregando'; }
+  else if (!login) { html = telaLoginFrentista(); chave = escolhido ? 'pin' : 'nomes'; }
+  else if (boasVindas) { html = telaBoasVindas(); chave = 'ola'; }
+  else if (tela === 'veiculo') { html = telaNovoVeiculo(); chave = 'sub:veiculo'; }
+  else if (tela === 'motorista') { html = telaNovoMotorista(); chave = 'sub:motorista'; }
+  else if (tela === 'corrigir') { html = telaCorrigirVeiculo(); chave = 'sub:corrigir'; }
+  else { html = { abastecer: telaAbastecer, turno: telaTurno, chegada: telaChegada, aferir: telaAfericao, fechar: telaFechar, ajuda: telaAjuda }[aba](); chave = `aba:${aba}`; }
   conteudo.innerHTML = html;
+  animarTroca(chave);
   document.querySelectorAll('#abas button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === aba)));
   if (foco) { const el = $(foco); if (el) { el.focus(); try { if (pos != null) el.setSelectionRange(pos, pos); } catch { /* campo sem seleção */ } } }
 }
@@ -521,6 +630,7 @@ conteudo.addEventListener('input', e => {
   else if (mapaMotorista[id]) novoMotorista[mapaMotorista[id]] = e.target.value;
   else if (id === 'cv-cap' || id === 'cv-km') correcao[id === 'cv-cap' ? 'capacidade' : 'km'] = e.target.value;
   else if (id === 'a-visor') afericao.visor = e.target.value;
+  else if (id === 'f-preco-novo') editPreco.valor = e.target.value;
   else if (e.target.dataset.tanque) medidos[e.target.dataset.tanque] = e.target.value;
   else return;
   render(e.target.tagName !== 'SELECT');
@@ -569,6 +679,22 @@ conteudo.addEventListener('click', async e => {
     tela = 'corrigir'; aviso = null; render();
   }
   if (acao === 'salvar-correcao') await executar(salvarCorrecao);
+  if (acao === 'abrir-app') fecharBoasVindas();
+  // Limpar o formulário de abastecer: pede confirmação na própria tela; a bomba e a hora ficam
+  if (acao === 'limpar') { confirmaLimpar = true; render(); }
+  if (acao === 'limpar-nao') { confirmaLimpar = false; render(); }
+  if (acao === 'limpar-sim') {
+    const { bomba, hora } = form;
+    form = { ...novoForm(), bomba, hora }; confirmaLimpar = false; editPreco = null;
+    aviso = { tipo: 'info', texto: 'Formulário limpo. A bomba e a hora ficaram.' }; render();
+  }
+  // Preço do diesel: usar o atual no lançamento, ou atualizar (vale para todos e fica com o nome do frentista)
+  if (acao === 'usar-preco') { form.usarPreco = !form.usarPreco; render(); }
+  if (acao === 'alterar-preco') { editPreco = { valor: '' }; render(); $('f-preco-novo')?.focus(); }
+  if (acao === 'cancelar-preco') { editPreco = null; render(); }
+  if (acao === 'salvar-preco') await executar(() => salvarPreco(parseNum(editPreco.valor), 'app'));
+  if (acao === 'preco-da-nf') await executar(() => salvarPreco(sugestaoPreco.preco, 'chegada'));
+  if (acao === 'ignorar-preco') { sugestaoPreco = null; render(); }
 });
 
 $('abas').addEventListener('click', async e => {
@@ -581,6 +707,7 @@ $('abas').addEventListener('click', async e => {
 $('sair').addEventListener('click', async () => {
   try { if (login) await rpc('sair_frentista', { p_sessao: login.sessao }); } catch { /* sai mesmo sem rede */ }
   login = null; gravar('frentistaLogin', null); escolhido = null; pin = ''; aviso = null; tela = null;
+  clearTimeout(timerBoasVindas); boasVindas = false; confirmaLimpar = false; editPreco = null; sugestaoPreco = null;
   render();
 });
 
@@ -594,21 +721,30 @@ async function adicionarFoto(dono) {
   render();
 }
 
+const espera = ms => new Promise(ok => setTimeout(ok, ms));
 async function teclarPin(tecla) {
-  if (enviando) return;
+  if (enviando || pinEstado) return;
   if (tecla === 'voltar') { escolhido = null; pin = ''; aviso = null; return render(); }
   if (tecla === 'apagar') { pin = pin.slice(0, -1); return render(); }
   if (pin.length >= 4) return;
   pin += tecla; aviso = null; render();
   if (pin.length < 4) return;
   await executar(async () => {
-    const r = await rpc('entrar_frentista', { p_frentista_id: escolhido, p_pin: pin });
-    pin = '';
-    if (!r.ok) { aviso = { tipo: 'warn', texto: r.erro }; return; }
+    let r;
+    try { r = await rpc('entrar_frentista', { p_frentista_id: escolhido, p_pin: pin }); } catch (e) { pin = ''; throw e; }
+    if (!r.ok) {   // PIN errado: os pontos tremem e ficam vermelhos, depois limpam
+      aviso = { tipo: 'warn', texto: r.erro }; pinEstado = 'erro';
+      setTimeout(() => { pin = ''; pinEstado = ''; render(); }, 650);
+      return;
+    }
+    pinEstado = 'certo'; render();
+    await espera(320);
+    pin = ''; pinEstado = '';
     login = { sessao: r.sessao, id: r.frentista.id, nome: r.frentista.nome };
     gravar('frentistaLogin', login);
-    escolhido = null; aba = 'abastecer'; form = novoForm(); chegada = novaChegada();
-    aviso = { tipo: 'ok', texto: `Olá, ${r.frentista.nome.split(' ')[0]}.` };
+    gravar('ultimoFrentista', r.frentista.id);
+    escolhido = null; aba = 'abastecer'; tela = null; form = novoForm(); chegada = novaChegada(); aviso = null;
+    boasVindas = true; clearTimeout(timerBoasVindas); timerBoasVindas = setTimeout(fecharBoasVindas, 2400);
   });
 }
 
@@ -621,6 +757,7 @@ async function enviarAbastecimento() {
     obs: c.falhas.length ? form.obs.trim() : null, desconto: form.desconto, justificativa_desconto: form.desconto ? null : form.justificativa.trim(),
     justificativa_horario: foraDoTurno(form.hora) ? form.justHorario.trim() : null,
     capacidade: precisaCapacidade(form) ? parseNum(form.capacidade) : null, cpf: precisaCpf(form) ? form.cpf.replace(/\D/g, '') : null,
+    preco: form.usarPreco && estado.preco_diesel ? Number(estado.preco_diesel.preco) : null,
   };
   const r = await rpc('registrar_abastecimento', { p_sessao: login.sessao, p_dados: dados });
   aviso = r.status === 'Aguardando autorização' ? { tipo: 'warn', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: aguardando autorização do supervisor.` }
@@ -628,6 +765,16 @@ async function enviarAbastecimento() {
     : { tipo: 'ok', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: lançado.` };
   await atualizarEstado();
   form = novoForm();   // próxima vez, o frentista escolhe a bomba de novo
+  confirmaLimpar = false; editPreco = null;
+}
+
+async function salvarPreco(preco, origem) {
+  if (!(preco >= 0.5 && preco < 100)) { aviso = { tipo: 'warn', texto: 'Confira o preço: por exemplo 6,19.' }; return; }
+  const r = await rpc('definir_preco_diesel', { p_sessao: login.sessao, p_preco: preco, p_origem: origem });
+  await atualizarEstado();
+  editPreco = null; sugestaoPreco = null;
+  if (form) form.usarPreco = true;
+  aviso = { tipo: 'ok', texto: `Preço do diesel atualizado para ${reais(r.preco)}/L. Vale para os próximos lançamentos.` };
 }
 
 async function enviarChegada() {
@@ -642,6 +789,10 @@ async function enviarChegada() {
   fotosChegada.forEach(x => URL.revokeObjectURL(x.previa)); fotosChegada = [];
   chegada = novaChegada();
   await atualizarEstado();
+  // NF com valor e litros: sugere atualizar o preço do diesel (se mudou)
+  const porLitro = Math.round((num(f.valor) / parseNum(f.litros)) * 1000) / 1000;
+  const valido = porLitro >= 0.5 && porLitro < 100, atual = estado.preco_diesel ? Number(estado.preco_diesel.preco) : null;
+  sugestaoPreco = valido && (atual == null || Math.abs(porLitro - atual) >= 0.005) ? { preco: porLitro, nf: f.nf.trim() } : null;
 }
 
 async function enviarAfericao() {

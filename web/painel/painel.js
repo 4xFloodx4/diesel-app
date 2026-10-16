@@ -266,7 +266,7 @@ function tabelaLancamentos(lista) {
 
 TELAS.resumo = async () => {
   const r = await carregar(async () => {
-    const [hoje, abHoje, pend, prontos, ultLote, bombas, af] = await Promise.all([
+    const [hoje, abHoje, pend, prontos, ultLote, bombas, af, preco] = await Promise.all([
       rpc('calcular_fechamento', { p_dia: hojeISO() }),
       consulta(supabase.from('abastecimentos').select('id, data_hora, placa, motorista, km, litros, bomba, status, problemas, desconto_confirmado, fora_horario, frentistas(nome)')
         .gte('data_hora', hojeISO()).order('data_hora', { ascending: false }).limit(2000)),
@@ -275,11 +275,12 @@ TELAS.resumo = async () => {
       consulta(supabase.from('lotes').select('*').order('id', { ascending: false }).limit(1)),
       consulta(supabase.from('bombas').select('numero').eq('ativa', true).order('numero')),
       consulta(supabase.from('afericoes').select('bomba, data_hora').order('data_hora', { ascending: false }).limit(500)),
+      consulta(supabase.from('precos_diesel').select('preco, origem, criado_em, frentistas(nome)').order('id', { ascending: false }).limit(1)),
     ]);
-    return { hoje, abHoje, pend, prontos, ultLote: ultLote[0], bombas, af };
+    return { hoje, abHoje, pend, prontos, ultLote: ultLote[0], bombas, af, preco: preco[0] };
   }, d => ({ hoje: d.hoje, abHoje: d.abastecimentos.filter(a => a.data_hora.startsWith(hojeISO())), pend: d.abastecimentos.filter(a => STATUS_DECISAO.includes(a.status)),
     prontos: d.abastecimentos.filter(a => a.status === 'Pronto'), ultLote: d.lotes.find(l => l.situacao === 'Confirmado'),
-    bombas: d.bombas.filter(b => b.ativa), af: d.afericoes }));
+    bombas: d.bombas.filter(b => b.ativa), af: d.afericoes, preco: d.precos[0] }));
   if (!r) return;
   const saida = r.hoje.reduce((s, t) => s + Number(t.saidas), 0);
   const nAut = r.pend.filter(a => a.status === 'Aguardando autorização').length;
@@ -295,8 +296,10 @@ TELAS.resumo = async () => {
       <div><small>Último lote</small><b class="num">${l ? `lote ${esc(l.id)}` : '—'}</b><em>${l ? `${esc(l.situacao.toLowerCase())} · ${quandoLocal(l.fechado_em || l.criado_em)}` : 'nenhum lote ainda'}</em></div>
       <div><small>Fechamento</small><b class="num">${fechado ? 'fechado' : 'aberto'}</b><em>turno ${esc(est.turno.abertura)}–${esc(est.turno.fechamento)}</em></div>
     </section>
-    ${r.bombas.length ? `<section class="painel"><header><h2>Aferição das bombas</h2><span>1 vez por semana · <button class="link" type="button" data-ir="tanques">ver aferições</button></span></header>
-      <div class="corpo">${r.bombas.map(b => `<b>Bomba ${esc(b.numero)}</b> ${chipAfericao(ultimaAfericao(r.af, b.numero))}`).join(' &nbsp; ')}</div></section>` : ''}
+    ${r.bombas.length ? `<section class="painel"><header><h2>Bombas e preço do diesel</h2><span>aferição 1 vez por semana · <button class="link" type="button" data-ir="tanques">ver aferições</button></span></header>
+      <div class="corpo">${r.bombas.map(b => `<b>Bomba ${esc(b.numero)}</b> ${chipAfericao(ultimaAfericao(r.af, b.numero))}`).join(' &nbsp; ')}
+        <p class="hint">${r.preco ? `Preço do litro: <b>R$ ${esc(nf(r.preco.preco, 3))}</b>, atualizado em ${quandoLocal(r.preco.criado_em)}${r.preco.frentistas?.nome ? ` por ${esc(r.preco.frentistas.nome)}` : ''}${r.preco.origem === 'chegada' ? ' (pela NF da chegada)' : ''}.`
+          : 'O preço do diesel ainda não foi informado. O frentista informa no app, na tela de abastecer.'}</p></div></section>` : ''}
     <div class="grade">
       <section class="painel"><header><h2>Tanques</h2><span>esperado = inicial + chegadas − saídas</span></header>
         <div class="corpo">${r.hoje.length ? `<div class="tanques">${r.hoje.map(tanqueHtml).join('')}</div>` : '<p class="hint">Nenhum tanque cadastrado. Cadastre em Tanques e fechamentos.</p>'}</div></section>
@@ -438,10 +441,11 @@ async function exportarExcel() {
     todos.push(...parte);
     if (parte.length < 1000) break;
   }
-  const linhas = [['ID (requisição KMM)', 'Data e hora', 'Placa', 'Motorista', 'CPF', 'KM', 'Litros', 'Encerrante anterior', 'Encerrante',
+  const linhas = [['ID (requisição KMM)', 'Data e hora', 'Placa', 'Motorista', 'CPF', 'KM', 'Litros', 'Preço do litro', 'Valor total', 'Encerrante anterior', 'Encerrante',
     'Bomba', 'Tanque', 'Status', 'Problemas', 'Desconto do motorista', 'Justificativa sem desconto', 'Fora do horário', 'Justificativa fora do horário',
     'Autorizado por', 'Obs. frentista', 'Obs. supervisor', 'Frentista', 'Conta do celular', 'Recebido em', 'Lote', 'Erro KMM'],
-    ...todos.reverse().map(r => [r.id, dataHora(r.data_hora), r.placa, r.motorista, r.cpf, r.km, Number(r.litros), Number(r.encerrante_anterior),
+    ...todos.reverse().map(r => [r.id, dataHora(r.data_hora), r.placa, r.motorista, r.cpf, r.km, Number(r.litros),
+      r.preco_litro == null ? '' : Number(r.preco_litro), r.valor_total == null ? '' : Number(r.valor_total), Number(r.encerrante_anterior),
       Number(r.encerrante), r.bomba, r.tanque, r.status, (r.problemas || []).join('; '), r.desconto_confirmado ? 'Sim' : 'Não',
       r.justificativa_desconto, r.fora_horario ? 'Sim' : 'Não', r.justificativa_horario, r.autorizado_por, r.obs_frentista, r.obs_supervisor,
       r.frentistas?.nome, r.conta, quandoLocal(r.recebido_em), r.lote_id, r.erro_kmm])];

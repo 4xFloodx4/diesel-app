@@ -86,6 +86,7 @@ export function dadosDemo() {
       detalhes: { antes: { email: 'posto2@empresa-demo.com.br', nome: 'Celular posto 2', papel: 'posto', ativo: true }, depois: { email: 'posto2@empresa-demo.com.br', nome: 'Celular posto 2', papel: 'posto', ativo: false } } },
   ];
   const porStatus = abastecimentos.reduce((m, a) => ((m[a.status] = (m[a.status] || 0) + 1), m), {});
-  return { abastecimentos, veiculos, motoristas, vinculos, tanques, bombas, hoje, fechamentos, chegadas, afericoes, frentistas, acessos, lotes, auditoria, porStatus,
+  const precos = [{ preco: 5.97, origem: 'chegada', criado_em: quando(0, '09:24'), frentistas: { nome: 'Ana Ribeiro' } }];   // NF de hoje: 29.850 / 5.000 L
+  return { abastecimentos, veiculos, motoristas, vinculos, tanques, bombas, hoje, fechamentos, chegadas, afericoes, precos, frentistas, acessos, lotes, auditoria, porStatus,
     configuracoes: { abertura: '05:00', fechamento: '23:00' }, fotos: {} };
 }
