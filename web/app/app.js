@@ -3,6 +3,7 @@
 // O banco confere tudo de novo; o resultado que vale é o dele.
 import { rpc, supabase, contaAtual, entrarComGoogle, aoVoltarDoLogin, sair, nativo } from '../comum/supa.js';
 import { App } from '@capacitor/app';
+import { Haptics, NotificationType } from '@capacitor/haptics';
 import { esc, nf, parseNum, hhmm, hojeISO, horaAgora, classeStatus, ler, gravar } from '../comum/util.js';
 import { tirarFoto, enviarFotos } from '../comum/fotos.js';
 import { vigiarAtualizacoes, situacaoAtualizacao, novidadeAplicada, confirmarAbertura } from '../comum/atualizacao.js';
@@ -173,9 +174,54 @@ async function atualizarEstado() {
   estado = await rpc('estado_posto');
   semAcesso = false; semRede = false;
   if (estado.papel !== 'posto') { location.replace(URL_PAINEL); throw new Error('Abrindo o painel…'); }
+  gravar('estadoCache', estado);   // na próxima abertura o app já aparece com isto, enquanto busca o atual
+}
+
+// Vibração curta: um toque para lançado, outro para erro (no app instalado; no navegador não faz nada)
+function vibrar(ok) {
+  if (!nativo) return;
+  Haptics.notification({ type: ok ? NotificationType.Success : NotificationType.Error }).catch(() => {});
+}
+
+// ---------- Rascunho do abastecimento ----------
+// O que o frentista está preenchendo fica guardado no celular (com a foto): fechou o app sem querer, ao abrir está tudo lá.
+// Só vale para o mesmo frentista e o mesmo dia; sai sozinho quando o lançamento é enviado ou o formulário é limpo.
+const CHAVE_RASCUNHO = 'rascunhoAbastecimento';
+let timerRascunho = null;
+const paraDataUrl = blob => new Promise(ok => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => ok(null); r.readAsDataURL(blob); });
+function dataUrlParaBlob(url) {
+  const [cab, dados] = url.split(','), bin = atob(dados), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: /:(.*?);/.exec(cab)?.[1] || 'image/jpeg' });
+}
+function guardarRascunho() {
+  clearTimeout(timerRascunho);
+  timerRascunho = setTimeout(async () => {
+    if (!login || !form) return;
+    if (!temAlgoPreenchido()) { gravar(CHAVE_RASCUNHO, null); return; }
+    const { fotos, ...campos } = form, f = fotos[0];
+    const foto = f ? (f.dados ||= await paraDataUrl(f.blob)) : null;
+    gravar(CHAVE_RASCUNHO, { frentista: login.id, dia: hojeISO(), form: campos, foto, caminho: f?.caminho || null });
+  }, 500);
+}
+function recuperarRascunho() {
+  const r = ler(CHAVE_RASCUNHO, null);
+  if (!r || !login || r.frentista !== login.id || r.dia !== hojeISO()) return null;
+  const f = { ...novoForm(), ...r.form, fotos: [] };
+  if (r.foto) {
+    try { const blob = dataUrlParaBlob(r.foto); f.fotos.push({ blob, previa: URL.createObjectURL(blob), dados: r.foto, caminho: r.caminho || undefined }); }
+    catch { /* foto estragada: o frentista tira de novo */ }
+  }
+  return f;
+}
+function formularioInicial() {
+  const r = recuperarRascunho();
+  if (r) aviso = { tipo: 'info', texto: 'O lançamento que estava sendo preenchido voltou. Confira e envie.' };
+  return r || novoForm();
 }
 
 function tratarErro(e) {
+  vibrar(false);
   if (e.frentistaSaiu) { login = null; gravar('frentistaLogin', null); aviso = { tipo: 'warn', texto: e.message }; }
   else if (e.semAcesso) semAcesso = true;
   else aviso = { tipo: 'warn', texto: e.semRede ? 'Sem internet. Nada foi enviado: confira a conexão e tente de novo.' : e.message };
@@ -648,6 +694,8 @@ function render(manterFoco) {
   animarTroca(chave);
   document.querySelectorAll('#abas [data-aba]').forEach(b => b.toggleAttribute('aria-current', b.dataset.aba === aba && !tela));
   if (chave !== 'carregando') tirarAbertura();
+  conteudo.querySelectorAll('input:not([type="time"])').forEach(el => el.setAttribute('enterkeyhint', 'next'));
+  if (logado && aba === 'abastecer' && !tela) guardarRascunho();
   if (foco) { const el = $(foco); if (el) { el.focus(); try { if (pos != null) el.setSelectionRange(pos, pos); } catch { /* campo sem seleção */ } } }
   desenharAtualizacao();
 }
@@ -717,7 +765,10 @@ conteudo.addEventListener('click', async e => {
   const acao = alvo('[data-acao]')?.dataset.acao;
   if (acao === 'google') { try { await entrarComGoogle(); } catch (err) { aviso = { tipo: 'warn', texto: err.message }; render(); } }
   if (acao === 'tentar') await carregar();
-  if (acao === 'trocar-google') { await sair(); conta = null; estado = null; semAcesso = false; login = null; gravar('frentistaLogin', null); render(); }
+  if (acao === 'trocar-google') {
+    await sair(); conta = null; estado = null; semAcesso = false; login = null;
+    gravar('frentistaLogin', null); gravar('estadoCache', null); gravar(CHAVE_RASCUNHO, null); render();
+  }
   // o cadastro já vem com o que o frentista digitou na busca
   if (acao === 'novo-veiculo') { tela = 'veiculo'; novoVeiculo = { placa: soPlaca(form.placaTxt), capacidade: TANQUE_PADRAO, km: '', fotos: [] }; aviso = null; render(); }
   if (acao === 'novo-motorista') { tela = 'motorista'; novoMotorista = { nome: form.motoristaTxt.trim().toUpperCase(), cpf: '' }; aviso = null; render(); }
@@ -804,7 +855,7 @@ async function teclarPin(tecla) {
     login = { sessao: r.sessao, id: r.frentista.id, nome: r.frentista.nome };
     gravar('frentistaLogin', login);
     gravar('ultimoFrentista', r.frentista.id);
-    escolhido = null; aba = 'abastecer'; tela = null; form = novoForm(); chegada = novaChegada(); aviso = null;
+    escolhido = null; aba = 'abastecer'; tela = null; aviso = null; form = formularioInicial(); chegada = novaChegada();
     boasVindas = true; clearTimeout(timerBoasVindas); timerBoasVindas = setTimeout(fecharBoasVindas, 2400);
   });
 }
@@ -827,6 +878,7 @@ async function enviarAbastecimento() {
   aviso = r.status === 'Aguardando autorização' ? { tipo: 'warn', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: aguardando autorização do supervisor.` }
     : r.status === 'Exceção' ? { tipo: 'warn', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: foi para o supervisor conferir.` }
     : { tipo: 'ok', texto: `#${r.id} ${dados.placa}, ${nf(dados.litros)} L: lançado.` };
+  vibrar(r.status === 'Pronto');
   await atualizarEstado();
   soltarFotos(form.fotos);
   form = novoForm();   // próxima vez, o frentista escolhe a bomba de novo
@@ -910,6 +962,19 @@ async function salvarMotorista() {
   aviso = { tipo: 'ok', texto: `Motorista ${r.nome} cadastrado.` };
 }
 
+// ---------- Teclado ----------
+conteudo.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
+  const campos = [...conteudo.querySelectorAll('input, select, textarea')].filter(el => !el.disabled && el.offsetParent && el.type !== 'hidden');
+  const i = campos.indexOf(e.target);
+  e.preventDefault();
+  if (i >= 0 && campos[i + 1]) campos[i + 1].focus(); else e.target.blur();
+});
+conteudo.addEventListener('focusin', e => {
+  if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+  setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 300);   // depois que o teclado sobe
+});
+
 // ---------- Menu lateral (igual ao do painel) ----------
 const TITULO_ABA = { abastecer: 'Abastecer', turno: 'Turno de hoje', chegada: 'Chegada de diesel', aferir: 'Aferição', fechar: 'Fechar turno', ajuda: 'Guia de uso' };
 const TITULO_SUBTELA = { veiculo: 'Cadastrar veículo', motorista: 'Cadastrar motorista', corrigir: 'Corrigir caminhão' };
@@ -944,6 +1009,10 @@ document.addEventListener('touchend', e => {
   const t = e.changedTouches[0], dx = t.clientX - toqueX, dy = Math.abs(t.clientY - toqueY);
   if (!menuAberto() && toqueX < 24 && dx > 60 && dy < 50) abrirMenu();
   else if (menuAberto() && dx < -60 && dy < 50) fecharMenu();
+  // Turno de hoje: puxar a lista para baixo (estando no topo) atualiza
+  else if (!menuAberto() && login && aba === 'turno' && !tela && conteudo.scrollTop <= 0 && t.clientY - toqueY > 90 && Math.abs(dx) < 50) {
+    executar(async () => { await atualizarEstado(); aviso = { tipo: 'ok', texto: `Atualizado às ${hhmm(estado.gerado_em)}.` }; });
+  }
   toqueX = null;
 }, { passive: true });
 // Botão voltar do Android: fecha o menu, volta da subtela ou para Abastecer; em Abastecer, deixa o app em segundo plano
@@ -974,14 +1043,26 @@ function tirarAbertura() {
 async function carregar() {
   conta = await contaAtual();
   aviso = null;
+  // Abre na hora com o último estado guardado neste celular; o do banco chega logo depois e a tela se atualiza
+  const guardado = conta && !estado ? ler('estadoCache', null) : null;
+  if (guardado?.conta === conta && guardado.papel === 'posto') {
+    estado = guardado;
+    form ||= formularioInicial(); chegada ||= novaChegada();
+    render();
+  }
   if (conta) {
     try { await atualizarEstado(); }
-    catch (e) { if (e.semAcesso) semAcesso = true; else if (e.semRede) semRede = true; else aviso = { tipo: 'warn', texto: e.message }; }
+    catch (e) {
+      if (e.semAcesso) semAcesso = true;
+      else if (e.semRede && guardado) aviso = { tipo: 'warn', texto: 'Sem internet: mostrando os dados guardados no celular. Para lançar, conecte de novo.' };
+      else if (e.semRede) semRede = true;
+      else aviso = { tipo: 'warn', texto: e.message };
+    }
     if (estado && estado.papel !== 'posto') return;   // indo para o painel (ele procura atualização)
     if (login && estado && !estado.frentistas.some(f => f.id === login.id)) { login = null; gravar('frentistaLogin', null); }
   }
-  form = estado ? novoForm() : null;
-  chegada = estado ? novaChegada() : null;
+  form = estado ? form || formularioInicial() : null;
+  chegada = estado ? chegada || novaChegada() : null;
   render();
   if (!atualizacaoVista) {
     atualizacaoVista = true;

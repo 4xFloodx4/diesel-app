@@ -4,7 +4,8 @@
   "webDir": "dist-android",
   "android": {
     "allowMixedContent": false,
-    "webContentsDebuggingEnabled": false
+    "webContentsDebuggingEnabled": false,
+    "backgroundColor": "#ffffff"
   },
   "plugins": {
     "CapacitorUpdater": {
@@ -18,5 +19,6 @@
       "updateUrl": "",
       "channelUrl": ""
     }
-  }
+  },
+  "backgroundColor": "#ffffff"
 }
