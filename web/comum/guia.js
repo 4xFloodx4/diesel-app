@@ -35,7 +35,7 @@ export const GUIA = {
       Lance logo depois de abastecer: a hora não pode ser de muito tempo atrás.</p>
       <p>Feche o turno logo depois do fim (o app avisa o prazo). <b>Se o turno ficou aberto, o posto não abre no dia seguinte:</b> o frentista da manhã mede a régua
       <b>antes de abastecer</b> e fecha o turno da noite (no app aparece o botão para isso). O supervisor vê que o fechamento foi feito depois do prazo e por quem.</p>
-      <div class="atencao"><b>Depois do fechamento do turno</b>, não dá para lançar mais nada com a data daquele dia. No menu <b>Turno de hoje</b> dá para baixar a folha do turno em PDF.</div>`],
+      <div class="atencao"><b>Depois do fechamento do turno</b>, não dá para lançar mais nada com a data daquele dia. A folha do turno em PDF o supervisor baixa no painel, no computador.</div>`],
     ['caminhao', 'Placa ou motorista que não está na lista', 'Cadastro pelo app', `<ol><li>Se a busca não achar, toque em <b>+ Cadastrar</b>: o cadastro já vem com o que você digitou.</li>
       <li>Veículo: digite a placa e o KM (o tanque já vem com 1100 L; mude se for diferente) e <b>tire uma foto do caminhão mostrando a placa</b>.</li>
       <li>Motorista: nome completo e CPF (o KMM exige o CPF).</li>

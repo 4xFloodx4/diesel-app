@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#ffffff">
+  <meta name="theme-color" content="#b86a07">
   <meta http-equiv="Content-Security-Policy" content="__CSP__">
   <meta name="referrer" content="no-referrer">
   <title>Abastecimento</title>
@@ -16,23 +16,30 @@
 <body>
   <!-- Abertura: aparece no mesmo instante em que o app abre e sai quando a primeira tela fica pronta -->
   <div class="abertura-app" id="abertura" role="status" aria-label="Abrindo o app">
-    <img src="__RAIZ__comum/logo-ritmo.jpg" alt="Ritmo Logística" width="125" height="50">
+    <svg width="64" height="64" viewBox="0 0 30 30" aria-hidden="true"><rect width="64" height="64" rx="7" fill="#b86a07"/>
+        <rect x="8" y="6.5" width="10.5" height="17" rx="1.6" fill="#fff"/><rect x="9.8" y="8.6" width="6.9" height="4.4" rx=".8" fill="#b86a07"/>
+        <path d="M18.5 17.5h3.4V10" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/><rect x="6.6" y="22.6" width="13.4" height="1.9" rx=".9" fill="#fff"/></svg>
+    <b>Abastecimento</b>
     <span class="progresso" aria-hidden="true"><i></i></span>
-    <small id="abertura-msg">Abastecimento Diesel</small>
+    <small id="abertura-msg">Carregando…</small>
   </div>
   <div class="tela">
     <header class="topo">
       <button class="ico" id="menu" type="button" aria-label="Abrir menu" aria-controls="gaveta" aria-expanded="false" hidden>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" rx="7" fill="#b86a07"/>
+        <rect x="8" y="6.5" width="10.5" height="17" rx="1.6" fill="#fff"/><rect x="9.8" y="8.6" width="6.9" height="4.4" rx=".8" fill="#b86a07"/>
+        <path d="M18.5 17.5h3.4V10" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/><rect x="6.6" y="22.6" width="13.4" height="1.9" rx=".9" fill="#fff"/></svg>
       <div class="titulo"><b id="titulo-tela">Abastecimento</b><span id="subtitulo"></span></div>
-      <img class="logo" src="__RAIZ__comum/logo-ritmo.jpg" alt="Ritmo Logística" width="65" height="26">
     </header>
     <main class="conteudo" id="conteudo"></main>
   </div>
   <div class="veu" id="veu" hidden></div>
   <nav class="gaveta" id="gaveta" aria-label="Menu" hidden>
     <div class="gaveta-topo">
-      <img src="__RAIZ__comum/logo-ritmo.jpg" alt="Ritmo Logística" width="100" height="40">
+      <div class="marca-app"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" rx="7" fill="#b86a07"/>
+        <rect x="8" y="6.5" width="10.5" height="17" rx="1.6" fill="#fff"/><rect x="9.8" y="8.6" width="6.9" height="4.4" rx=".8" fill="#b86a07"/>
+        <path d="M18.5 17.5h3.4V10" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/><rect x="6.6" y="22.6" width="13.4" height="1.9" rx=".9" fill="#fff"/></svg><div><b>Abastecimento</b><span>Posto interno</span></div></div>
       <div class="quem" id="gaveta-quem"></div>
     </div>
     <div class="itens" id="abas">

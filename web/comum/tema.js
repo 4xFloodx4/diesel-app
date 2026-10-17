@@ -1,10 +1,24 @@
-// Tema: o app e o painel são sempre claros, no visual da Ritmo (o tema escuro saiu).
-// Modo demonstração do administrador: fica guardado só neste aparelho.
+// Tema escolhido pela pessoa (claro, escuro ou automático) e modo demonstração do administrador.
+// Os dois ficam guardados só neste aparelho.
 import { ler, gravar } from './util.js';
 
-export function aplicarTema() { document.documentElement.setAttribute('data-theme', 'light'); }
-export function definirTema() { aplicarTema(); }
-export const htmlTema = () => '';
+export const temaAtual = () => ler('diesel-tema', 'claro');
+
+export function aplicarTema(t = temaAtual()) {
+  if (t === 'claro') document.documentElement.setAttribute('data-theme', 'light');
+  else if (t === 'escuro') document.documentElement.setAttribute('data-theme', 'dark');
+  else document.documentElement.removeAttribute('data-theme');
+  document.querySelectorAll('[data-tema]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tema === t)));
+}
+
+export function definirTema(t) {
+  if (!['claro', 'escuro', 'auto'].includes(t)) return;
+  gravar('diesel-tema', t);
+  aplicarTema(t);
+}
+
+export const htmlTema = () => `<div class="tema" role="group" aria-label="Tema">${[['claro', 'Claro'], ['escuro', 'Escuro'], ['auto', 'Automático']]
+  .map(([k, t]) => `<button type="button" data-tema="${k}" aria-pressed="${temaAtual() === k}">${t}</button>`).join('')}</div>`;
 
 // Modo demonstração: só muda o que a tela mostra; nenhuma ação é enviada ao banco enquanto estiver ligado
 export const demoLigado = () => ler('diesel-demo', false) === true;

@@ -61,8 +61,9 @@ const CSP = [
   `connect-src 'self' https://${host} wss://${host} ${site}`.trim(), "object-src 'none'", "base-uri 'none'", "form-action 'none'",
 ].join('; ');
 
-// Fonte Roboto (licença OFL) copiada do pacote para dentro do site e do APK: nada é carregado de fora
-const FONTES = [['roboto', 'roboto', 'roboto', [400, 500, 700]]];
+// Fontes IBM Plex (licença OFL) copiadas do pacote para dentro do site e do APK: nada é carregado de fora
+const FONTES = [['ibm-plex-sans', 'ibm-plex-sans', 'sans', [400, 500, 600]], ['ibm-plex-sans-condensed', 'ibm-plex-sans-condensed', 'cond', [500, 600, 700]],
+  ['ibm-plex-mono', 'ibm-plex-mono', 'mono', [400, 500, 600]]];
 function copiarFontes(destino) {
   mkdirSync(join(destino, 'comum', 'fontes'), { recursive: true });
   for (const [pacote, arquivo, nome, pesos] of FONTES) for (const peso of pesos) {
@@ -91,7 +92,7 @@ async function gerar(destino, paginas, alvo) {
   for (const f of ['base.css', 'pecas.css']) cpSync(join(WEB, 'comum', f), join(destino, 'comum', f));
   copiarFontes(destino);
   cpSync(join(WEB, 'comum', 'icone.svg'), join(destino, 'comum', 'icone.svg'));
-  cpSync(join(WEB, 'comum', 'logo-ritmo.jpg'), join(destino, 'comum', 'logo-ritmo.jpg'));   // logo original do site da Ritmo
+  cpSync(join(WEB, 'comum', 'logo-ritmo.jpg'), join(destino, 'comum', 'logo-ritmo.jpg'));   // logo da Ritmo na folha do turno (PDF)
   for (const p of paginas) {
     cpSync(join(WEB, p.css), join(destino, p.css));
     const html = readFileSync(join(WEB, p.html), 'utf8').replaceAll('__CSP__', CSP).replaceAll('__RAIZ__', p.raiz);

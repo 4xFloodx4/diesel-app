@@ -1,7 +1,7 @@
 // Folha do fechamento do turno (modelo "RELATÓRIO DIÁRIO DE ABASTECIMENTO - VERSÃO ONLINE" da Ritmo) em PDF, montada
 // aqui mesmo, no painel ou no app, com os dados de folha_do_dia(). Mais de 35 abastecimentos ou mais de uma chegada de
 // diesel no dia: a folha continua numa segunda página igual. A assinatura fica em branco (o analista carimba e assina).
-// No navegador o PDF baixa; no app do celular abre a tela de compartilhar (salvar, WhatsApp, Drive...).
+// A folha é baixada no computador (no app do celular não há como salvar arquivo sem um APK novo).
 import { nativo, ErroApi } from './supa.js';
 
 const LINHAS = 35;
@@ -83,20 +83,10 @@ export async function montarFolha(f, logo) {
   return doc;
 }
 
-/** Salva o PDF: no navegador baixa o arquivo; no app abre a tela de compartilhar do Android. */
+/** Baixa o PDF (no computador). */
 export async function salvarPdf(doc, nome) {
-  if (!nativo) { doc.save(nome); return; }
-  try {
-    const { Filesystem, Directory } = await import('@capacitor/filesystem');
-    const { Share } = await import('@capacitor/share');
-    const arq = await Filesystem.writeFile({ path: nome, data: doc.output('datauristring').split(',')[1], directory: Directory.Cache });
-    await Share.share({ title: nome, url: arq.uri, dialogTitle: 'Salvar ou enviar a folha do turno' });
-  } catch (e) {
-    if (/cancel/i.test(String(e?.message || e))) return;
-    throw new ErroApi(/not implemented|não implementad/i.test(String(e?.message || e))
-      ? 'Para baixar a folha no celular, instale a versão nova do app (APK). No computador, baixe pelo painel.'
-      : `Não foi possível salvar a folha: ${e?.message || e}`);
-  }
+  if (nativo) throw new ErroApi('A folha do turno é baixada no computador, pelo painel.');
+  doc.save(nome);
 }
 
 export const nomeFolha = dia => `Folha-do-turno-${dia.slice(8, 10)}-${dia.slice(5, 7)}-${dia.slice(0, 4)}.pdf`;

@@ -6,7 +6,6 @@ import { App } from '@capacitor/app';
 import { Haptics, NotificationType } from '@capacitor/haptics';
 import { esc, nf, parseNum, hhmm, hojeISO, horaAgora, classeStatus, ler, gravar } from '../comum/util.js';
 import { tirarFoto, enviarFotos } from '../comum/fotos.js';
-import { montarFolha, salvarPdf, nomeFolha } from '../comum/folha.js';
 import { vigiarAtualizacoes, situacaoAtualizacao, novidadeAplicada, confirmarAbertura, versaoAtual } from '../comum/atualizacao.js';
 import { aplicarTema, htmlTema, definirTema, protegerContraMoldura } from '../comum/tema.js';
 import { htmlGuia, htmlAbasGuia } from '../comum/guia.js';
@@ -281,8 +280,10 @@ function blocoFotos(lista, dono, minimo = 0, maximo = MAX_FOTOS, rotulo = maximo
       ${lista.length < maximo ? `<button type="button" class="nova-foto" data-foto="${dono}">+ Tirar foto</button>` : ''}</div></div>`;
 }
 
-const LOGO_RITMO = __ALVO__ === 'android' ? 'comum/logo-ritmo.jpg' : '../comum/logo-ritmo.jpg';
-const MARCA = `<img class="marca" src="${LOGO_RITMO}" alt="Ritmo Logística" width="125" height="50">`;
+const MARCA = `<svg class="marca" viewBox="0 0 72 72" aria-hidden="true"><rect width="72" height="72" rx="18" fill="#b86a07"/>
+  <rect x="19" y="15" width="25" height="41" rx="4" fill="#fff"/><rect x="23.5" y="20" width="16" height="10.5" rx="2" fill="#b86a07"/>
+  <path d="M44 42h8V24" stroke="#fff" stroke-width="3.6" fill="none" stroke-linecap="round"/><path class="gota" d="M52 24c0 0-3 3.5-3 5.5a3 3 0 0 0 6 0C55 27.5 52 24 52 24z" fill="#f6e6cc"/>
+  <rect x="15" y="54" width="32" height="4.5" rx="2.2" fill="#fff"/></svg>`;
 const G = `<svg class="g" viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.6 9.2c0-.6-.1-1.2-.2-1.8H9v3.4h4.8a4.1 4.1 0 0 1-1.8 2.7v2.2h2.9c1.7-1.6 2.7-3.9 2.7-6.5z"/><path fill="#34A853" d="M9 18c2.4 0 4.5-.8 6-2.2l-2.9-2.2c-.8.5-1.8.9-3.1.9-2.4 0-4.4-1.6-5.1-3.8H.9v2.3A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.9 10.7a5.4 5.4 0 0 1 0-3.4V5H.9a9 9 0 0 0 0 8z"/><path fill="#EA4335" d="M9 3.6c1.3 0 2.5.5 3.5 1.4l2.6-2.6A9 9 0 0 0 .9 5l3 2.3C4.6 5.2 6.6 3.6 9 3.6z"/></svg>`;
 
 function telaGoogle() {
@@ -534,7 +535,6 @@ function telaTurno() {
       ${r.problemas?.length ? `<ul>${r.problemas.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
     </div>`).join('') : '<p class="hint">Nenhum abastecimento hoje.</p>'}
     <button class="btn ghost" type="button" data-acao="atualizar">Atualizar</button>
-    <button class="btn ghost" type="button" data-acao="folha" data-dia="${esc(estado.dia)}">Baixar a folha do turno de hoje (PDF)</button>
     <p class="hint">Atualizado às ${hhmm(estado.gerado_em)} · turno das ${esc(estado.turno?.abertura)} às ${esc(estado.turno?.fechamento)}.</p>`;
 }
 
@@ -639,8 +639,7 @@ function telaFechar() {
   if (p.length > 1) return avisoHtml() + travaPendente();
   const diaPendente = p[0] || null, tanques = diaPendente ? estado.tanques_pendente || [] : estado.tanques;
   if (!diaPendente && estado.tanques.some(t => t.fechado)) {
-    return `${avisoHtml()}<div class="toast ok">O turno de hoje já foi fechado.</div>
-      <button class="btn ghost" type="button" data-acao="folha" data-dia="${esc(estado.dia)}">Baixar a folha do turno (PDF)</button>${estado.tanques.map(t => `<div class="tanque"><h3>${esc(t.tanque)}</h3>
+    return `${avisoHtml()}<div class="toast ok">O turno de hoje já foi fechado. A folha do turno em PDF o supervisor baixa no painel, no computador.</div>${estado.tanques.map(t => `<div class="tanque"><h3>${esc(t.tanque)}</h3>
       <div class="medidor"><span>Esperado</span><span class="v">${nf(t.fechado.saldo_calculado, 0)} L</span>
       <span>Medido (régua)</span><span class="v">${nf(t.fechado.saldo_medido, 0)} L</span>
       <span class="tot">Diferença</span><span class="v tot">${nf(t.fechado.diferenca, 0)} L</span></div></div>`).join('')}`;
@@ -671,7 +670,8 @@ function telaFechar() {
 }
 
 function telaAjuda() {
-  return `${htmlAbasGuia(guia, ['frentista', 'glossario'])}${htmlGuia(guia, estado.turno)}
+  return `<div class="field"><span class="lbl">Tema da tela</span>${htmlTema()}</div>
+    ${htmlAbasGuia(guia, ['frentista', 'glossario'])}${htmlGuia(guia, estado.turno)}
     <p class="hint">Conta do celular: ${esc(conta)}</p>`;
 }
 
@@ -830,14 +830,7 @@ conteudo.addEventListener('click', async e => {
   if (acao === 'salvar-correcao') await executar(salvarCorrecao);
   if (acao === 'abrir-app') fecharBoasVindas();
   if (acao === 'ir-fechar') { aba = 'fechar'; aviso = null; render(); }
-  if (acao === 'folha') {
-    const dia = alvo('[data-acao]').dataset.dia;
-    await executar(async () => {
-      const f = await rpc('folha_do_dia', { p_dia: dia });
-      await salvarPdf(await montarFolha(f, LOGO_RITMO), nomeFolha(f.data));
-      aviso = { tipo: 'ok', texto: `Folha do turno de ${diaCurto(f.data)} pronta.` };
-    });
-  }
+
   // Limpar o formulário de abastecer: pede confirmação na própria tela; a bomba e a hora ficam
   if (acao === 'limpar') { confirmaLimpar = true; render(); }
   if (acao === 'limpar-nao') { confirmaLimpar = false; render(); }

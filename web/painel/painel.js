@@ -79,7 +79,7 @@ async function mostrarLogin(msg) {
   $('lado').innerHTML = '';
   const conta = await contaAtual();
   trabalho.innerHTML = `<div class="entrada"><div class="cartao">
-    <div class="marca marca-entrada">${LOGO}<div><b>Abastecimento</b><span>Painel do diesel</span></div></div>
+    <div class="marca marca-entrada">${LOGO}<div><b>Diesel</b><span>Painel do supervisor</span></div></div>
     <h1>${conta ? 'Conta sem acesso ao painel' : 'Entrar no painel'}</h1>
     ${conta ? `<p>Conectado como <b>${esc(conta)}</b>.</p>` : '<p>Entre com a sua conta Google de supervisor ou administrador.</p>'}
     ${msg ? `<div class="toast warn">${esc(msg)}</div>` : ''}
@@ -120,8 +120,9 @@ async function iniciarAgora() {
 
 // ---------- Menu lateral ----------
 const svg = d => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
-// Logo original do site da Ritmo (no APK o painel fica em painel/, no site também: o logo está em ../comum/)
-const LOGO = '<img class="logo-ritmo" src="../comum/logo-ritmo.jpg" alt="Ritmo Logística" width="100" height="40">';
+const LOGO = `<svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" rx="7" fill="#b86a07"/>
+  <rect x="8" y="6.5" width="10.5" height="17" rx="1.6" fill="#fff"/><rect x="9.8" y="8.6" width="6.9" height="4.4" rx=".8" fill="#b86a07"/>
+  <path d="M18.5 17.5h3.4V10" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/><rect x="6.6" y="22.6" width="13.4" height="1.9" rx=".9" fill="#fff"/></svg>`;
 const IC = {
   grade: '<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/>',
   lista: '<path d="M2 4h12M2 8h8M2 12h5"/>', doc: '<path d="M3 2h10v12H3zM6 5h4M6 8h4M6 11h2"/>', gota: '<path d="M8 2s4 4.6 4 7.5a4 4 0 0 1-8 0C4 6.6 8 2 8 2z"/>',
@@ -143,11 +144,11 @@ const MENU = [
 const TITULO = Object.fromEntries(MENU.flatMap(([, itens]) => itens.map(i => [i[0], i[1]])));
 
 function montarMenu() {
-  $('lado').innerHTML = `<div class="marca">${LOGO}</div>
+  $('lado').innerHTML = `<div class="marca">${LOGO}<div><b>Diesel</b><span>Posto interno</span></div></div>
     ${MENU.map(([grupo, itens]) => [grupo, itens.filter(podeVer)]).filter(([, itens]) => itens.length).map(([grupo, itens]) => `<div class="grupo"><h4>${grupo}</h4>${itens.map(([id, rot, ic]) =>
       `<button type="button" class="item" data-tela="${id}">${svg(IC[ic])}${rot}<span class="qtd num" data-qtd="${id}" hidden></span></button>`).join('')}</div>`).join('')}
     <div class="conta"><div><b>${esc(est.nome)}</b>${NOME_PAPEL[est.papel]}${est.nome !== est.conta ? `<br>${esc(est.conta)}` : ''}</div>
-      ${souDev() ? `<div class="ajustes">${htmlChaveDemo()}</div>` : ''}
+      <div class="ajustes"><span class="rot">Tema</span>${htmlTema()}${souDev() ? htmlChaveDemo() : ''}</div>
       <button type="button" class="sair" id="sair">Sair da conta</button></div>`;
   marcarMenu();
 }
@@ -675,7 +676,7 @@ function cartaoTurno(t, emLote) {
         ${pode && vaiJunto && !gerados.length ? `<button class="btn small" type="button" data-acao="gerar" data-dia="${esc(t.dia)}">Gerar planilha do KMM (${vaiJunto})</button>` : ''}
         ${[...gerados, ...confirmados].map(l => `<button class="btn small ghost" type="button" data-acao="baixar" data-lote="${esc(l.id)}" data-dia="${esc(t.dia)}">Planilha do KMM${t.lotes.length > 1 ? ` nº ${esc(l.id)}` : ''}</button>
           <button class="btn small ghost" type="button" data-acao="conferencia" data-lote="${esc(l.id)}" data-dia="${esc(t.dia)}">Lista para conferência</button>`).join('')}
-        <button class="btn small ghost" type="button" data-acao="folha" data-dia="${esc(t.dia)}">Folha do turno (PDF)</button>
+        ${nativo ? '' : `<button class="btn small ghost" type="button" data-acao="folha" data-dia="${esc(t.dia)}">Folha do turno (PDF)</button>`}
         ${rel ? `<a class="btn small ghost" href="${esc(rel.drive_url)}" target="_blank" rel="noopener noreferrer">Cópia no Drive</a>` : ''}
         ${pode ? gerados.map(l => `<button class="btn small" type="button" data-acao="confirmar" data-lote="${esc(l.id)}">Marcar como lançado no KMM</button>
           <button class="btn small ghost" type="button" data-acao="desfazer" data-lote="${esc(l.id)}">Desfazer (não lancei)</button>`).join('') : ''}
@@ -730,7 +731,7 @@ TELAS.relatorios = async () => {
     <section class="painel"><div class="tabela"><table><thead><tr><th>Dia</th><th>Turno fechado</th><th class="n">Abastecimentos</th><th class="n">Chegadas</th><th>Relatório</th></tr></thead><tbody>
     ${ts.map(t => `<tr><td>${esc(diaSemana(t.dia))}</td><td>${quandoLocal(t.fechado_em)}${t.fechado_por ? `<span class="sub">${esc(t.fechado_por)}</span>` : ''}</td>
       <td class="n">${esc(t.abastecimentos)}</td><td class="n">${esc(t.chegadas)}</td>
-      <td><div class="acoes"><button class="btn small ghost" type="button" data-acao="folha" data-dia="${esc(t.dia)}">Baixar folha (PDF)</button>
+      <td><div class="acoes">${nativo ? '<span class="hint">no computador</span>' : `<button class="btn small ghost" type="button" data-acao="folha" data-dia="${esc(t.dia)}">Baixar folha (PDF)</button>`}
         ${t.relatorio ? `<a class="lk" href="${esc(t.relatorio.drive_url)}" target="_blank" rel="noopener noreferrer">cópia no Drive</a>` : ''}</div></td></tr>`).join('')
         || '<tr><td colspan="5" class="vazio">Nenhum turno fechado ainda.</td></tr>'}
     </tbody></table></div></section>
