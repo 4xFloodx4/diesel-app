@@ -428,7 +428,7 @@ test('posto não abre com o turno anterior aberto: o frentista da manhã fecha (
     let e = await rpc(POSTO, 'estado_posto');
     assert.deepEqual(e.dias_sem_fechamento, [dia(2), dia(1)]);
     await assert.rejects(abastecer(reg(0, { km: 150250, litros: 1, encerrante: 1 })), /não foi fechado/);
-    await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_dia: dia(1) }), /O supervisor fecha os mais antigos/);
+    await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_dia: dia(1), p_fotos: [foto('fechamento')] }), /O supervisor fecha os mais antigos/);
     await assert.rejects(rpc(CHEFE, 'fechar_sem_medicao', { p_dia: dia(1), p_motivo: 'Dois dias sem fechar' }), /dia mais antigo/);
     const r = await rpc(CHEFE, 'fechar_sem_medicao', { p_dia: dia(2), p_motivo: 'Frentista esqueceu dois dias' });
     assert.equal(r.tanques, 1);
@@ -436,7 +436,8 @@ test('posto não abre com o turno anterior aberto: o frentista da manhã fecha (
     assert.deepEqual(e.dias_sem_fechamento, [dia(1)]);
     assert.equal(e.tanques_pendente[0].tanque, 'TQ01');
     // o frentista da manhã mede a régua e fecha o de ontem: fica marcado como atrasado, com quem trabalhou no dia
-    await rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_dia: dia(1) });
+    await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_dia: dia(1) }), /foto da régua/);
+    await rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_dia: dia(1), p_fotos: [foto('fechamento')] });
     const f = (await db.query('select atrasado, sem_medicao from fechamentos where data = $1', [dia(1)])).rows[0];
     assert.deepEqual(f, { atrasado: true, sem_medicao: false });
     assert.deepEqual((await rpc(POSTO, 'estado_posto')).dias_sem_fechamento, []);
@@ -485,12 +486,12 @@ test('turno fechado sem querer: o supervisor reabre, o frentista lança e fecha 
   const a = await abastecer(reg(1, { km: 150900, litros: 10, encerrante: 7071910 }));
   assert.ok(a.id);
   await rpc(CHEFE, 'decidir_abastecimento', { p_id: a.id, p_acao: 'cancelar', p_motivo: 'Teste do turno reaberto' });
-  const [t] = await rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_fotos: [] });
+  const [t] = await rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_fotos: [foto('fechamento')] });
   assert.equal(Number(t.saldo_calculado), 12000 + 1000 - 944);
   const [aud] = (await db.query("select conta, detalhes from auditoria where acao = 'turno.reaberto'")).rows;
   assert.equal(aud.conta, CHEFE);
   assert.equal(aud.detalhes.fechamentos[0].saldo_medido, 12000);
-  assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'fechamento', p_chave: dia })).length, 1);   // a foto da régua continua
+  assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'fechamento', p_chave: dia })).length, 2);   // a foto do primeiro fechamento continua, mais a do novo
 });
 
 test('supervisor não move lançamento para um dia já fechado', async () => {

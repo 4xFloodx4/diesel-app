@@ -1068,6 +1068,9 @@ begin
   if not exists (select 1 from tanques) then
     raise exception 'Nenhum tanque cadastrado. Peça ao supervisor.' using errcode = '22023';
   end if;
+  if coalesce(cardinality(p_fotos), 0) = 0 then
+    raise exception 'Tire a foto da régua (obrigatória para fechar o turno).' using errcode = '22023';
+  end if;
   for t in select value from jsonb_array_elements(calcular_fechamento(v_dia)) loop
     v_med := (p_medidos ->> (t ->> 'tanque'))::numeric;
     if v_med is null or v_med < 0 then

@@ -644,7 +644,8 @@ function telaFechar() {
       <span>Medido (régua)</span><span class="v">${nf(t.fechado.saldo_medido, 0)} L</span>
       <span class="tot">Diferença</span><span class="v tot">${nf(t.fechado.diferenca, 0)} L</span></div></div>`).join('')}`;
   }
-  const completos = tanques.length && tanques.every(t => !Number.isNaN(parseNum(medidos[t.tanque])));
+  const completos = tanques.length && tanques.every(t => !Number.isNaN(parseNum(medidos[t.tanque]))) && fotosFechamento.length > 0;
+  const faltaFechar = !tanques.every(t => !Number.isNaN(parseNum(medidos[t.tanque]))) ? 'Falta a medida da régua' : !fotosFechamento.length ? 'Falta a foto da régua' : '';
   const passouPrazo = !diaPendente && estado.turno && minutos(horaAgora()) > minutos(estado.turno.fechamento) + LIM.prazoFechamento;
   return `
     ${avisoHtml()}
@@ -665,8 +666,8 @@ function telaFechar() {
         ${!Number.isNaN(m) ? `<ul class="checks"><li class="${Math.abs(dif) <= LIM.tolTanque ? 'ok' : 'falha'}">${Math.abs(dif) <= LIM.tolTanque
           ? `Diferença de ${nf(dif, 0)} L, dentro da tolerância.` : `Diferença de ${nf(dif, 0)} L. O supervisor vai receber um alerta.`}</li></ul>` : ''}
       </div>`; }).join('')}
-    ${blocoFotos(fotosFechamento, 'fechamento')}
-    ${botaoEnviar('fechar', diaPendente ? `Fechar o turno de ${diaCurto(diaPendente)}` : 'Fechar turno', completos)}`;
+    ${blocoFotos(fotosFechamento, 'fechamento', 1, MAX_FOTOS, 'Foto da régua')}
+    ${botaoEnviar('fechar', diaPendente ? `Fechar o turno de ${diaCurto(diaPendente)}` : 'Fechar turno', completos, '', faltaFechar)}`;
 }
 
 function telaAjuda() {

@@ -44,7 +44,7 @@ export const GUIA = {
     ['regua', 'Chegada de diesel e fechamento do turno', 'Régua, nota fiscal e fotos', `<ol><li><b>Chegada:</b> meça a régua antes da descarga, descarregue e meça de novo. Lance a NF, os litros, o valor e as duas medidas, e tire foto da nota.
       Digite o começo da <b>placa do cavalo</b> e toque no caminhão: a carreta e o motorista vêm preenchidos. Caminhão que ainda não veio: preencha carreta, motorista e CPF, e ele fica cadastrado.
       Se o preço por litro da NF for diferente do atual, o app pergunta se quer atualizar o preço do diesel.</li>
-      <li><b>Fechamento (até as {FECHAMENTO}):</b> meça cada tanque com a régua, digite as medidas, tire foto da régua e toque em <b>Fechar turno</b>.</li></ol>
+      <li><b>Fechamento (até as {FECHAMENTO}):</b> meça cada tanque com a régua, digite as medidas, tire a foto da régua (obrigatória) e toque em <b>Fechar turno</b>.</li></ol>
       <div class="dica">Se a medida ficar mais de 20 L longe do esperado, o supervisor é avisado. Meça com calma e com o caminhão já fora da bomba. Fechou o turno sem querer? Peça ao supervisor para reabrir no painel.</div>`],
     ['medida', 'Aferição da bomba', 'Uma vez por semana em cada bomba', `<ol><li>Encha a <b>medida padrão de 20 L</b> com a bomba.</li>
       <li>Anote quanto o <b>visor</b> marcou e tire a foto da medida cheia junto com o visor.</li>
