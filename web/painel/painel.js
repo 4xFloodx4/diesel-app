@@ -971,21 +971,46 @@ TELAS.veiculos = async () => {
     </div>`;
 };
 
+// Editar um cadastro: o formulário de cima recebe os dados. Cancelar (ou Esc, ou tocar de novo em Editar) volta ao
+// formulário vazio. Durante a edição o campo-chave (placa, código, número) fica travado: mudá-lo criaria outro cadastro.
+const CAMPO_CHAVE = { veiculos: 'placa', tanques: 'codigo', bombas: 'numero', caminhoes_diesel: 'placa_cavalo' };
+function cancelarEdicao(f) {
+  if (!f) return;
+  f.reset();
+  f.classList.remove('editando');
+  delete f.dataset.editando; delete f.dataset.editandoId;
+  f.querySelector('.editando-aviso')?.remove();
+  for (const el of f.elements) el.readOnly = false;
+  const botao = f.querySelector('button[type="submit"]');
+  if (botao && f.dataset.textoBotao) botao.textContent = f.dataset.textoBotao;
+  trabalho.querySelectorAll('[data-acao="editar"][aria-pressed]').forEach(b => b.removeAttribute('aria-pressed'));
+}
 function editarCadastro(tabela, id) {
   const lista = est.cad?.[tabela];
   const chave = { veiculos: 'placa', motoristas: 'id', tanques: 'codigo', bombas: 'numero', caminhoes_diesel: 'placa_cavalo' }[tabela];
   const item = lista?.find(x => String(x[chave]) === String(id));
   const f = trabalho.querySelector(`form[data-form="${tabela}"]`);
   if (!item || !f) return;
+  const jaEditando = f.dataset.editando === String(id);
+  cancelarEdicao(f);
+  if (jaEditando) return;   // tocou de novo em Editar: fecha
   for (const el of f.elements) {
     if (!el.name || !(el.name in item)) continue;
     el.value = el.name === 'cpf' ? '' : (typeof item[el.name] === 'boolean' ? String(item[el.name]) : (item[el.name] ?? ''));
   }
-  if (tabela === 'motoristas') f.dataset.editandoId = item.id; else delete f.dataset.editandoId;
+  if (tabela === 'motoristas') f.dataset.editandoId = item.id;
+  f.dataset.editando = String(id);
+  if (CAMPO_CHAVE[tabela] && f.elements[CAMPO_CHAVE[tabela]]) f.elements[CAMPO_CHAVE[tabela]].readOnly = true;
+  const botao = f.querySelector('button[type="submit"]');
+  if (botao) { f.dataset.textoBotao ||= botao.textContent; botao.textContent = 'Salvar alterações'; }
+  f.insertAdjacentHTML('afterbegin', `<div class="editando-aviso"><span>Editando <b>${esc(item.nome || id)}</b></span>
+    <button class="btn small ghost" type="button" data-cancelar-edicao>Cancelar</button></div>`);
+  trabalho.querySelector(`[data-acao="editar"][data-tabela="${CSS.escape(tabela)}"][data-id="${CSS.escape(String(id))}"]`)?.setAttribute('aria-pressed', 'true');
   f.classList.add('editando');
   f.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  (f.querySelector('[name="cpf"]') || f.elements[1])?.focus();
+  (f.querySelector('[name="cpf"]') || [...f.elements].find(el => el.name && !el.readOnly))?.focus();
 }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') trabalho.querySelectorAll('form.editando').forEach(cancelarEdicao); });
 
 // ---------- Acessos (contas Google) ----------
 TELAS.acessos = async () => {
@@ -1161,6 +1186,7 @@ document.addEventListener('click', async e => {
   if (t('[data-db-tabela]')) { est.banco.tabela = t('[data-db-tabela]').dataset.dbTabela; est.banco.busca = ''; abrir('banco'); return; }
   if (t('[data-aud-filtro]')) { est.aud.filtro = t('[data-aud-filtro]').dataset.audFiltro; mostrarAuditoria(); return; }
   if (t('[data-guia]')) { est.guia = t('[data-guia]').dataset.guia; abrir('guia', { semCarregando: true }); return; }
+  if (t('[data-cancelar-edicao]')) { cancelarEdicao(t('form')); return; }
   const li = t('.caixa li[data-decisao]');
   if (li) { selecionarDecisao(Number(li.dataset.decisao)); return; }
   const b = t('button[data-acao]');

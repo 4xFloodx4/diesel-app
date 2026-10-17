@@ -58,7 +58,11 @@ html, body { min-height: 100%; }
 button.link { border: 0; background: none; padding: 0; color: var(--tinta-2); border-bottom: 1px solid var(--risco-forte); cursor: pointer; font-size: 12px; }
 .corpo { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
 .formulario { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end; }
-.formulario.editando { outline: 2px solid var(--diesel); outline-offset: 6px; border-radius: 6px; }
+.formulario.editando { outline: 2px solid var(--azul); outline-offset: 6px; border-radius: 6px; }
+.editando-aviso { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--azul-fundo);
+  color: var(--azul); border-radius: 6px; padding: 6px 6px 6px 12px; font-size: 13.5px; }
+.formulario input[readonly] { background: var(--placa-2); color: var(--tinta-2); }
+.btn[data-acao="editar"][aria-pressed="true"] { background: var(--azul-fundo); border-color: var(--azul); color: var(--azul); }
 
 /* Tanques */
 .tanques { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; }
