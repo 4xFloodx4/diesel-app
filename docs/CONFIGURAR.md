@@ -12,11 +12,17 @@ Você vai precisar de:
 
 1. Em supabase.com, crie um projeto. Região: **South America (São Paulo)**. Guarde a senha do banco num lugar seguro.
 2. Menu **SQL Editor** → **New query** → cole todo o conteúdo de `supabase/schema.sql` → **Run**. Deve terminar com "Success".
-3. Ainda no SQL Editor, libere a sua conta de supervisor (troque pelo seu e-mail Google e nome):
+3. Ainda no SQL Editor, libere a sua conta como **desenvolvedor** (troque pelo seu e-mail Google e nome):
    ```sql
-   insert into acessos (email, nome, papel) values ('seu.email@gmail.com', 'Seu Nome', 'supervisor');
+   insert into acessos (email, nome, papel) values ('seu.email@gmail.com', 'Seu Nome', 'desenvolvedor');
    ```
-   As outras contas (celulares e outros supervisores) você libera depois, pelo painel.
+   As outras contas você libera depois, pelo painel, em **Acessos**. Cargos, do maior para o menor:
+   - **Desenvolvedor:** tudo, inclusive o banco de dados pelo painel e criar administradores. Outro desenvolvedor só por este SQL.
+   - **Administrador** (o analista): fecha o turno no KMM, ajusta horário e regras, libera celulares e supervisores.
+   - **Supervisor:** decisões, cadastros, frentistas e PIN. Não libera contas.
+   - **Celular do posto:** a conta Google do celular, onde cada frentista entra com nome e PIN.
+
+   Sistema que já estava no ar, com a sua conta como administrador: rode `supabase/uma-vez/virar-desenvolvedor.sql` (com o seu e-mail) depois do `schema.sql`.
 4. Menu **Project Settings** → **API**: copie a **Project URL** (`https://xxxx.supabase.co`) e a chave **anon public**. Você vai usar as duas no passo 4.
 
 ## 2. Google: login
@@ -91,7 +97,7 @@ Para atualizar o app depois, crie uma nova release com tag maior (`v1.0.1`, `v1.
 ## 7. Primeiro uso
 
 **No painel** (`https://SEU-USUARIO.github.io/diesel-app/painel/`), entre com a sua conta Google de supervisor:
-0. **Horário do turno** (só o administrador, em Sistema): o padrão é das 05:00 às 23:00. Fora dele, o lançamento precisa de justificativa e autorização.
+0. **Horário e regras** (administrador, em Sistema): o turno padrão é das 05:00 às 23:00; fora dele, o lançamento precisa de justificativa e autorização. As regras da conferência (salto de KM, folga do encerrante, régua, aferição, tanque padrão de 1100 L) já vêm com valores comuns; ajuste só se precisar.
 1. **Frentistas**: cadastre cada frentista com um **PIN de 4 números**. É com o nome e o PIN que ele entra no app.
 2. **Acessos**: libere o e-mail Google do celular do posto, como "Celular do posto".
 3. **Cadastros** (Tanques e fechamentos; Veículos e motoristas):
@@ -135,6 +141,21 @@ Espaço: com cerca de 25 abastecimentos por dia, dá uns 250 MB por mês. Os 15 
 
 **Se algo falhar:** o Google manda um e-mail quando uma execução dá erro. As fotos que não foram ficam no Supabase e vão na próxima rodada, então nada se perde. Se o script ficar parado, as fotos se acumulam no Supabase (1 GB grátis, uns 3 meses), por isso confira **Execuções** de vez em quando.
 
+## 9. Relatório diário em PDF
+
+Depois que o frentista fecha o turno, o mesmo script do passo 8 preenche o modelo **RELATÓRIO DIÁRIO DE ABASTECIMENTO - VERSÃO ONLINE** e salva o PDF na pasta do dia (`Abastecimentos/2026-10/16/Relatorio-diario-16-10.pdf`). O painel abre o PDF em **Exportar › Relatório diário** e no cartão do turno. A assinatura fica em branco, para o carimbo do analista.
+
+**Instalar (uma vez):**
+1. No Google Drive da mesma conta do script, envie o arquivo `RELATÓRIO DIÁRIO DE ABASTECIMENTO - VERSÃO ONLINE.xlsx`.
+2. Clique nele com o botão direito → **Abrir com** → **Planilhas Google**. Depois **Arquivo** → **Salvar como Planilhas Google**. É essa cópia em Planilha Google que o script usa.
+3. Copie o ID dela (o que vem entre `/d/` e `/edit` no endereço).
+4. No script, **Configurações do projeto** → **Propriedades do script** → adicione `MODELO_ID` = o ID copiado.
+5. Cole o `scripts/drive-comprovantes.gs` novo por cima do antigo e salve.
+6. Execute **instalar** de novo. O Google pede uma autorização nova (agora também para planilhas): **Avançado** → **Acessar** → **Permitir**.
+7. Para testar sem esperar: feche um turno no app (ou reabra e feche no painel) e execute **testarRelatorio**. Em **Execuções** aparece o link do PDF.
+
+O modelo tem lugar para 35 abastecimentos e uma chegada de diesel. Passou disso, o PDF ganha outra folha igual. Mudou o modelo no Drive? O próximo relatório já sai com ele. Só não mude as linhas e colunas de lugar: o script escreve nas células do modelo (cabeçalho nas linhas 5 a 7, abastecimentos de 10 a 44, recebimento de 46 a 50).
+
 ## Cuidados com o plano gratuito do Supabase
 
 - **Pausa por inatividade:** projeto gratuito sem nenhum uso por 7 dias é pausado. Com o posto lançando todo dia isso não acontece; se acontecer, é só clicar em **Restore** no painel do Supabase.
@@ -148,6 +169,8 @@ O app se atualiza sozinho. Cada mudança enviada ao GitHub publica um pacote nov
 O título do commit aparece para o frentista: escreva em português simples, como "Foto do comprovante obrigatória em todo abastecimento".
 
 Só é preciso instalar um APK novo quando mudar algo da "casca" do app: ícone, nome, permissões ou componentes do Android. Nesse caso, crie uma release nova (`v1.2.0`, …) e instale por cima.
+
+A vibração ao enviar e o fundo branco ao abrir (no lugar do fundo preto por um instante) só funcionam a partir de um APK gerado depois dessa mudança. Sem o APK novo, o resto funciona normalmente; só não vibra.
 
 ## Atualizar o banco
 

@@ -307,7 +307,7 @@ TELAS.resumo = async () => {
       <div><small>Fechamento</small><b class="num">${fechado ? 'fechado' : 'aberto'}</b><em>turno ${esc(est.turno.abertura)}–${esc(est.turno.fechamento)}</em></div>
     </section>
     ${r.bombas.length ? `<section class="painel"><header><h2>Bombas e preço do diesel</h2><span>aferição 1 vez por semana · <button class="link" type="button" data-ir="tanques">ver aferições</button></span></header>
-      <div class="corpo">${r.bombas.map(b => `<b>Bomba ${esc(b.numero)}</b> ${chipAfericao(ultimaAfericao(r.af, b.numero))}`).join(' &nbsp; ')}
+      <div class="corpo"><div class="acoes bombas-af">${r.bombas.map(b => `<span><b>Bomba ${esc(b.numero)}</b> ${chipAfericao(ultimaAfericao(r.af, b.numero))}</span>`).join('')}</div>
         <p class="hint">${r.preco ? `Preço do litro: <b>R$ ${esc(nf(r.preco.preco, 3))}</b>, atualizado em ${quandoLocal(r.preco.criado_em)}${r.preco.frentistas?.nome ? ` por ${esc(r.preco.frentistas.nome)}` : ''}${r.preco.origem === 'chegada' ? ' (pela NF da chegada)' : ''}.`
           : 'O preço do diesel ainda não foi informado. O frentista informa no app, na tela de abastecer.'}</p></div></section>` : ''}
     <div class="grade">

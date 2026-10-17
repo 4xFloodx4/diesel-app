@@ -121,7 +121,7 @@ function avisoFechamento() {
 function avisoAfericao() {
   const vencidas = (estado?.bombas || []).filter(b => b.afericao_vencida).map(b => b.numero);
   return vencidas.length ? `<div class="toast info" role="status">Aferição da${vencidas.length > 1 ? 's bombas' : ' bomba'} ${vencidas.join(' e ')} vencida (é semanal).
-    Faça na aba <b>Aferir</b>.</div>` : '';
+    Faça em <b>Aferição</b>, no menu.</div>` : '';
 }
 const diasDesde = iso => Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
 const situacaoAfericao = b => !b.ultima_afericao ? 'nunca feita' : b.afericao_vencida ? 'vencida'

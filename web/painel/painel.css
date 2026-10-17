@@ -5,6 +5,7 @@ html, body { min-height: 100%; }
   background: linear-gradient(to right, var(--lado) 235px, var(--lado-borda) 235px 236px, transparent 236px); }
 .app.sem-menu { background: none; }
 .app.sem-menu { grid-template-columns: minmax(0, 1fr); }
+.app.sem-menu .trabalho { max-width: none; }   /* tela de entrada: o cartão centraliza na tela toda, não só nos primeiros 1500 px */
 .app.sem-menu .lado, .app.sem-menu .barra-movel, .app.sem-menu .puxador { display: none !important; }
 .coluna { min-width: 0; }
 
@@ -233,6 +234,8 @@ textarea { min-height: 70px; resize: vertical; }
 .lista-exp .btn { margin-top: auto; }
 .corpo > .filtros { padding: 0 0 14px; }
 a.lk { color: var(--azul); font-weight: 500; text-decoration: none; }
+.bombas-af { gap: 8px 24px; }
+.bombas-af > span { display: inline-flex; align-items: center; gap: 8px; }
 /* Banco de dados do desenvolvedor */
 .tabs-db { display: flex; flex-wrap: wrap; gap: 5px; }
 .tabs-db button { font: 500 12.5px var(--f-texto); padding: 5px 10px; border-radius: 6px; border: 1px solid var(--risco-forte); background: var(--placa); color: var(--tinta-2); cursor: pointer; }
