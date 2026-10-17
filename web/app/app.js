@@ -28,7 +28,7 @@ let login = ler('frentistaLogin', null); // {sessao, id, nome}
 let aba = 'abastecer';
 let tela = null;                         // subtela: 'veiculo' | 'motorista' | null
 let aviso = null, enviando = false, semAcesso = false, semRede = false;
-let form = null, chegada = null, medidos = {}, fotosChegada = [], fotosFechamento = [];
+let form = null, chegada = null, medidos = {}, encLidos = {}, fotosChegada = [], fotosFechamento = [];   // medidos/encLidos: abrir e fechar o turno
 let afericao = { bomba: null, visor: '' }, fotosAfericao = [];
 let novoVeiculo = null, novoMotorista = null, correcao = null;   // correcao: {placa, capacidade, km} do caminhão já cadastrado
 let escolhido = null, pin = '';          // tela de login do frentista
@@ -126,6 +126,11 @@ const diaCurto = iso => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
 const pendentes = () => estado?.dias_sem_fechamento || [];
 function travaPendente() {
   const p = pendentes(), ultimo = p[p.length - 1];
+  if (!p.length) {
+    return `<div class="aviso-grande"><b>Abra o turno para começar</b>
+      <p>Antes do primeiro abastecimento, meça a régua dos tanques, anote o encerrante das bombas e tire as fotos.</p></div>
+      <button class="btn" type="button" data-acao="ir-fechar">Abrir o turno</button>`;
+  }
   if (p.length > 1) {
     return `<div class="aviso-grande"><b>${p.length} dias sem fechamento do turno</b>
       <p>O posto só abre com o turno anterior fechado. ${p.length > 2 ? 'Os dias' : 'O dia'} ${p.slice(0, -1).map(diaCurto).join(', ')} o supervisor fecha pelo painel;
@@ -133,9 +138,9 @@ function travaPendente() {
       <button class="btn ghost" type="button" data-acao="atualizar">O supervisor já fechou? Atualizar</button>`;
   }
   return `<div class="aviso-grande"><b>O turno de ${diaCurto(ultimo)} não foi fechado</b>
-    <p>Para abrir o posto, meça a régua dos tanques agora, antes de abastecer, e feche o turno de ${diaCurto(ultimo)}.
+    <p>Para abrir o posto, meça a régua e os encerrantes agora, antes de abastecer: as mesmas medidas fecham o turno de ${diaCurto(ultimo)} e abrem o de hoje.
     O supervisor vai ver que o fechamento foi feito depois do prazo e por quem.</p></div>
-    <button class="btn" type="button" data-acao="ir-fechar">Fechar o turno de ${diaCurto(ultimo)}</button>`;
+    <button class="btn" type="button" data-acao="ir-fechar">Fechar o de ${diaCurto(ultimo)} e abrir o de hoje</button>`;
 }
 // Aferição é semanal em cada bomba: lembra na tela de abastecer quando alguma passou de 7 dias
 function avisoAfericao() {
@@ -417,8 +422,9 @@ function blocoPreco() {
     ${form.usarPreco && p && lt > 0 ? `<div class="total"><span class="lbl">Valor total</span><b class="num">${reais(Math.round(lt * p.preco * 100) / 100)}</b></div>` : ''}</div>`;
 }
 
+const precisaAbrir = () => pendentes().length || (!estado.aberto_hoje && !estado.fechado_hoje);
 function telaAbastecer() {
-  if (pendentes().length) return avisoHtml() + travaPendente();
+  if (precisaAbrir()) return avisoHtml() + travaPendente();
   if (estado.fechado_hoje) return avisoHtml() + diaFechado();
   if (!estado.bombas.length) return '<p class="hint">Nenhuma bomba cadastrada. Peça ao supervisor.</p>';
   const c = conferir(form);
@@ -520,16 +526,12 @@ function telaNovoMotorista() {
 
 function telaTurno() {
   const lista = [...estado.hoje].sort((a, b) => String(b.data_hora).localeCompare(String(a.data_hora)));
-  const n = s => estado.hoje.filter(r => s.includes(r.status)).length;
+  // O frentista só precisa saber se ficou certo ou se foi para o supervisor (o que acontece no KMM é com o analista)
+  const situacao = s => s === 'Cancelado' ? ['Cancelado', 'Cancelado'] : ['Exceção', 'Erro', 'Aguardando autorização'].includes(s) ? ['Com o supervisor', 'Exceção'] : ['OK', 'Lançado'];
   return `${avisoHtml()}${avisoFechamento()}
-    <div class="resumo">
-      <div><b>${n(['Lançado'])}</b><span>Lançados no KMM</span></div>
-      <div><b>${n(['Pronto', 'Em lote'])}</b><span>Aguardando o KMM</span></div>
-      <div><b>${n(['Exceção', 'Erro', 'Aguardando autorização'])}</b><span>Com o supervisor</span></div>
-    </div>
-    <div class="secao">Hoje</div>
+    <div class="secao">Hoje · ${estado.hoje.filter(r => r.status !== 'Cancelado').length} abastecimento(s)</div>
     ${lista.length ? lista.map(r => `<div class="reg">
-      <div class="linha1"><span class="placa">${esc(r.placa)}</span><span class="pill ${classeStatus(r.status)}">${esc(r.status)}</span></div>
+      <div class="linha1"><span class="placa">${esc(r.placa)}</span><span class="pill ${classeStatus(situacao(r.status)[1])}">${esc(situacao(r.status)[0])}</span></div>
       <div class="det">${hhmm(r.data_hora)} · ${esc(r.motorista)} · Bomba ${esc(r.bomba)} · #${r.id}</div>
       <div class="det">${nf(r.litros)} L · ${nf(r.km, 0)} km · ${esc(r.frentista || '')}${r.desconto_confirmado ? '' : ' · sem desconto'}</div>
       ${r.problemas?.length ? `<ul>${r.problemas.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
@@ -539,7 +541,7 @@ function telaTurno() {
 }
 
 function telaChegada() {
-  if (pendentes().length) return avisoHtml() + travaPendente();
+  if (precisaAbrir()) return avisoHtml() + travaPendente();
   if (estado.fechado_hoje) return avisoHtml() + diaFechado();
   const f = chegada, l = parseNum(f.litros), sub = parseNum(f.depois) - parseNum(f.antes);
   const okRegua = l > 0 && sub > 0 && Math.abs(sub - l) <= LIM.tolTanque;
@@ -610,7 +612,7 @@ function historicoAfericoes() {
 }
 
 function telaAfericao() {
-  if (pendentes().length) return avisoHtml() + travaPendente() + historicoAfericoes();
+  if (precisaAbrir()) return avisoHtml() + travaPendente() + historicoAfericoes();
   if (estado.fechado_hoje) return avisoHtml() + diaFechado() + historicoAfericoes();
   if (!estado.bombas.length) return '<p class="hint">Nenhuma bomba cadastrada. Peça ao supervisor.</p>';
   const f = afericao, v = parseNum(f.visor), dif = v - 20;
@@ -634,40 +636,58 @@ function telaAfericao() {
     ${historicoAfericoes()}`;
 }
 
+// Abrir e fechar o turno (uma tela só, que mostra o que estiver na vez). Nos dois: régua de cada tanque, encerrante de cada
+// bomba e de 1 a 5 fotos. Turno de ontem esquecido: um formulário só fecha o de ontem (atrasado) e abre o de hoje.
+const MAX_FOTOS_TURNO = 5;
+const modoTurno = () => pendentes().length === 1 ? 'pendente' : !estado.aberto_hoje ? 'abrir' : estado.fechado_hoje ? 'fechado' : 'fechar';
 function telaFechar() {
   const p = pendentes();
   if (p.length > 1) return avisoHtml() + travaPendente();
-  const diaPendente = p[0] || null, tanques = diaPendente ? estado.tanques_pendente || [] : estado.tanques;
-  if (!diaPendente && estado.tanques.some(t => t.fechado)) {
+  const modo = modoTurno(), diaPendente = p[0] || null;
+  if (modo === 'fechado') {
     return `${avisoHtml()}<div class="toast ok">O turno de hoje já foi fechado. A folha do turno em PDF o supervisor baixa no painel, no computador.</div>${estado.tanques.map(t => `<div class="tanque"><h3>${esc(t.tanque)}</h3>
       <div class="medidor"><span>Esperado</span><span class="v">${nf(t.fechado.saldo_calculado, 0)} L</span>
       <span>Medido (régua)</span><span class="v">${nf(t.fechado.saldo_medido, 0)} L</span>
       <span class="tot">Diferença</span><span class="v tot">${nf(t.fechado.diferenca, 0)} L</span></div></div>`).join('')}`;
   }
-  const completos = tanques.length && tanques.every(t => !Number.isNaN(parseNum(medidos[t.tanque]))) && fotosFechamento.length > 0;
-  const faltaFechar = !tanques.every(t => !Number.isNaN(parseNum(medidos[t.tanque]))) ? 'Falta a medida da régua' : !fotosFechamento.length ? 'Falta a foto da régua' : '';
-  const passouPrazo = !diaPendente && estado.turno && minutos(horaAgora()) > minutos(estado.turno.fechamento) + LIM.prazoFechamento;
+  const tanques = modo === 'pendente' ? estado.tanques_pendente || [] : estado.tanques;
+  const bombas = estado.bombas || [];
+  const reguaOk = tanques.length && tanques.every(t => !Number.isNaN(parseNum(medidos[t.tanque])));
+  const encOk = bombas.every(b => !Number.isNaN(parseNum(encLidos[b.numero])));
+  const completos = reguaOk && encOk && fotosFechamento.length > 0;
+  const falta = !reguaOk ? 'Falta a régua dos tanques' : !encOk ? 'Falta o encerrante das bombas' : !fotosFechamento.length ? 'Falta a foto (régua e bombas)' : '';
+  const passouPrazo = modo === 'fechar' && estado.turno && minutos(horaAgora()) > minutos(estado.turno.fechamento) + LIM.prazoFechamento;
+  const titulo = { pendente: `Fechar o turno de ${diaCurto(diaPendente || '')} e abrir o de hoje`, abrir: 'Abrir o turno', fechar: 'Fechar o turno' }[modo];
   return `
     ${avisoHtml()}
-    ${diaPendente ? `<div class="toast warn">Fechando o turno de <b>${diaCurto(diaPendente)}</b>, que ficou aberto. Meça a régua agora, antes de abastecer.</div>`
-      : `<p class="hint">Meça os tanques no fim do turno. O sistema compara com o que entrou e saiu pelas bombas.</p>`}
+    ${modo === 'pendente' ? `<div class="toast warn">O turno de <b>${diaCurto(diaPendente)}</b> ficou aberto. Meça agora, antes de abastecer: as mesmas medidas fecham o de ${diaCurto(diaPendente)} e abrem o de hoje.</div>`
+      : modo === 'abrir' ? '<p class="hint">Antes do primeiro abastecimento: meça a régua de cada tanque, anote o encerrante de cada bomba e tire as fotos.</p>'
+      : '<p class="hint">No fim do turno: meça a régua, anote o encerrante de cada bomba e tire as fotos. O sistema compara com o que entrou e saiu.</p>'}
     ${passouPrazo ? `<p class="hint">O prazo (até ${esc(somaMin(estado.turno.fechamento, LIM.prazoFechamento))}) passou: o fechamento vale, mas fica marcado como atrasado para o supervisor.</p>` : ''}
+    <div class="secao">Tanques</div>
     ${tanques.map(t => {
-      const m = parseNum(medidos[t.tanque]), dif = m - t.saldo_calculado;
-      return `<div class="tanque"><h3>${esc(t.tanque)}</h3>
-        <div class="medidor">
-          <span>Saldo inicial</span><span class="v">${nf(t.saldo_inicial, 0)} L</span>
-          <span>+ Chegadas</span><span class="v">${nf(t.chegadas, 0)} L</span>
-          <span>− Saída pelas bombas</span><span class="v">${nf(t.saidas, 0)} L</span>
-          <span class="tot">= Saldo esperado</span><span class="v tot">${nf(t.saldo_calculado, 0)} L</span>
-        </div>
-        <div class="field"><label class="lbl" for="m-${esc(t.tanque)}">Saldo medido (régua)</label>
+      const m = parseNum(medidos[t.tanque]);
+      const ref = modo === 'abrir' ? Number(t.saldo_inicial) : Number(t.saldo_calculado), dif = m - ref;
+      const conta = modo === 'abrir' ? `<span>Último fechamento</span><span class="v">${nf(t.saldo_inicial, 0)} L</span>`
+        : `<span>Saldo inicial</span><span class="v">${nf(t.saldo_inicial, 0)} L</span><span>+ Chegadas</span><span class="v">${nf(t.chegadas, 0)} L</span>
+          <span>− Saída pelas bombas</span><span class="v">${nf(t.saidas, 0)} L</span><span class="tot">= Saldo esperado</span><span class="v tot">${nf(t.saldo_calculado, 0)} L</span>`;
+      return `<div class="tanque"><h3>${esc(t.tanque)}</h3><div class="medidor">${conta}</div>
+        <div class="field"><label class="lbl" for="m-${esc(t.tanque)}">Régua (medido agora)</label>
           <input id="m-${esc(t.tanque)}" data-tanque="${esc(t.tanque)}" class="num" inputmode="decimal" value="${esc(medidos[t.tanque] ?? '')}"></div>
-        ${!Number.isNaN(m) ? `<ul class="checks"><li class="${Math.abs(dif) <= LIM.tolTanque ? 'ok' : 'falha'}">${Math.abs(dif) <= LIM.tolTanque
-          ? `Diferença de ${nf(dif, 0)} L, dentro da tolerância.` : `Diferença de ${nf(dif, 0)} L. O supervisor vai receber um alerta.`}</li></ul>` : ''}
+        ${!Number.isNaN(m) ? `<ul class="checks"><li class="${Math.abs(dif) <= LIM.tolTanque ? 'ok' : 'falha'}">${modo === 'abrir'
+          ? `Oscilação desde o fechamento: ${dif > 0 ? '+' : ''}${nf(dif, 0)} L${Math.abs(dif) > LIM.tolTanque ? '. O supervisor vai ver.' : '.'}`
+          : Math.abs(dif) <= LIM.tolTanque ? `Diferença de ${nf(dif, 0)} L, dentro da tolerância.` : `Diferença de ${nf(dif, 0)} L. O supervisor vai receber um alerta.`}</li></ul>` : ''}
       </div>`; }).join('')}
-    ${blocoFotos(fotosFechamento, 'fechamento', 1, MAX_FOTOS, 'Foto da régua')}
-    ${botaoEnviar('fechar', diaPendente ? `Fechar o turno de ${diaCurto(diaPendente)}` : 'Fechar turno', completos, '', faltaFechar)}`;
+    <div class="secao">Encerrante das bombas</div>
+    ${bombas.map(b => {
+      const v = parseNum(encLidos[b.numero]), dif = v - Number(b.encerrante_anterior);
+      return `<div class="field"><label class="lbl" for="e-${b.numero}">Bomba ${b.numero}: encerrante agora</label>
+        <input id="e-${b.numero}" data-encerrante="${b.numero}" class="num" inputmode="decimal" value="${esc(encLidos[b.numero] ?? '')}">
+        <span class="hint">Último no sistema: ${nf(b.encerrante_anterior)}</span>
+        ${!Number.isNaN(v) ? `<ul class="checks"><li class="${Math.abs(dif) <= LIM.tolEnc ? 'ok' : 'falha'}">${Math.abs(dif) <= LIM.tolEnc
+          ? 'Bate com o último lançamento.' : `Diferença de ${dif > 0 ? '+' : ''}${nf(dif)} L do último lançamento. O supervisor vai ver.`}</li></ul>` : ''}</div>`; }).join('')}
+    ${blocoFotos(fotosFechamento, 'fechamento', 1, MAX_FOTOS_TURNO, 'Fotos da régua e das bombas (até 5)')}
+    ${botaoEnviar('fechar', titulo, completos, '', falta)}`;
 }
 
 function telaAjuda() {
@@ -681,7 +701,7 @@ function telaAjuda() {
 const chegadaPreenchida = () => !!chegada && ['nf', 'litros', 'valor', 'antes', 'depois', 'placa', 'carreta', 'motorista', 'cpf'].some(k => String(chegada[k] || '').trim());
 const appLivre = () => !enviando && !tela && !boasVindas && !pin && !editPreco && !confirmaLimpar && !sugestaoPreco
   && !(login && form && temAlgoPreenchido()) && !chegadaPreenchida() && !afericao.visor.trim() && afericao.bomba == null
-  && !fotosChegada.length && !fotosAfericao.length && !fotosFechamento.length && !Object.values(medidos).some(v => String(v ?? '').trim())
+  && !fotosChegada.length && !fotosAfericao.length && !fotosFechamento.length && !Object.values(medidos).some(v => String(v ?? '').trim()) && !Object.values(encLidos).some(v => String(v ?? '').trim())
   && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
 // Faixa logo abaixo do topo enquanto baixa ou espera; tela cheia na hora de aplicar
 const faixaAtualizacao = document.createElement('div');
@@ -778,6 +798,7 @@ conteudo.addEventListener('input', e => {
   else if (id === 'a-visor') afericao.visor = e.target.value;
   else if (id === 'f-preco-novo') editPreco.valor = e.target.value;
   else if (e.target.dataset.tanque) medidos[e.target.dataset.tanque] = e.target.value;
+  else if (e.target.dataset.encerrante) encLidos[e.target.dataset.encerrante] = e.target.value;
   else return;
   render(e.target.tagName !== 'SELECT');
 });
@@ -970,16 +991,26 @@ async function enviarAfericao() {
 }
 
 async function fecharTurno() {
-  const diaPendente = pendentes().length === 1 ? pendentes()[0] : null;
-  const tanques = diaPendente ? estado.tanques_pendente || [] : estado.tanques;
+  const modo = modoTurno(), diaPendente = modo === 'pendente' ? pendentes()[0] : null;
+  const tanques = modo === 'pendente' ? estado.tanques_pendente || [] : estado.tanques;
   const valores = Object.fromEntries(tanques.map(t => [t.tanque, parseNum(medidos[t.tanque])]));
-  const caminhos = await enviarFotos('fechamento', fotosFechamento);
-  const r = await rpc('registrar_fechamento', { p_sessao: login.sessao, p_medidos: valores, p_fotos: caminhos, p_dia: diaPendente });
-  const alertas = r.filter(t => t.alerta).length;
-  const qual = diaPendente ? `Turno de ${diaCurto(diaPendente)} fechado` : 'Turno fechado';
-  aviso = { tipo: alertas ? 'warn' : 'ok', texto: alertas ? `${qual}. ${alertas} tanque(s) com diferença: o supervisor foi avisado.` : `${qual}. Tudo bateu.${diaPendente ? ' O posto está aberto.' : ''}` };
-  if (diaPendente) aba = 'abastecer';
-  medidos = {}; fotosFechamento.forEach(x => URL.revokeObjectURL(x.previa)); fotosFechamento = [];
+  const encs = Object.fromEntries((estado.bombas || []).map(b => [b.numero, parseNum(encLidos[b.numero])]));
+  let alertas = 0, alertaAbertura = null;
+  if (modo !== 'abrir') {   // fechar (o de hoje, ou o de ontem que ficou aberto)
+    const caminhos = await enviarFotos('fechamento', fotosFechamento);
+    const r = await rpc('registrar_fechamento', { p_sessao: login.sessao, p_medidos: valores, p_fotos: caminhos, p_dia: diaPendente, p_encerrantes: encs });
+    alertas = r.filter(t => t.alerta).length;
+  }
+  if (modo !== 'fechar') {  // abrir o de hoje (as mesmas medidas, quando é o de ontem que estava aberto)
+    const caminhos = await enviarFotos('abertura', fotosFechamento);
+    const r = await rpc('registrar_abertura', { p_sessao: login.sessao, p_medidos: valores, p_encerrantes: encs, p_fotos: caminhos });
+    alertaAbertura = r.alerta;
+  }
+  const qual = { pendente: `Turno de ${diaCurto(diaPendente || '')} fechado e o de hoje aberto`, abrir: 'Turno aberto', fechar: 'Turno fechado' }[modo];
+  const atencao = alertas || alertaAbertura;
+  aviso = { tipo: atencao ? 'warn' : 'ok', texto: atencao ? `${qual}. Houve diferença: o supervisor foi avisado.` : `${qual}. Tudo bateu.` };
+  if (modo !== 'fechar') aba = 'abastecer';
+  medidos = {}; encLidos = {}; fotosFechamento.forEach(x => URL.revokeObjectURL(x.previa)); fotosFechamento = [];
   await atualizarEstado();
 }
 
@@ -1025,7 +1056,7 @@ conteudo.addEventListener('focusin', e => {
 });
 
 // ---------- Menu lateral (igual ao do painel) ----------
-const TITULO_ABA = { abastecer: 'Abastecer', turno: 'Turno de hoje', chegada: 'Chegada de diesel', aferir: 'Aferição', fechar: 'Fechar turno', ajuda: 'Guia de uso' };
+const TITULO_ABA = { abastecer: 'Abastecer', turno: 'Turno de hoje', chegada: 'Chegada de diesel', aferir: 'Aferição', fechar: 'Abrir e fechar turno', ajuda: 'Guia de uso' };
 const TITULO_SUBTELA = { veiculo: 'Cadastrar veículo', motorista: 'Cadastrar motorista', corrigir: 'Corrigir caminhão' };
 const gaveta = $('gaveta'), veu = $('veu');
 const menuAberto = () => !gaveta.hidden;
@@ -1046,7 +1077,7 @@ function desenharGaveta() {
   const qtd = (k, txt, aviso) => { const el = gaveta.querySelector(`[data-qtd="${k}"]`); if (el) { el.textContent = txt || ''; el.classList.toggle('aviso', !!aviso); } };
   qtd('turno', estado?.hoje?.length || '');
   qtd('aferir', (estado?.bombas || []).some(b => b.afericao_vencida) ? 'vencida' : '', true);
-  qtd('fechar', pendentes().length ? 'turno aberto' : '', true);
+  qtd('fechar', pendentes().length ? 'turno de ontem aberto' : !estado?.aberto_hoje && !estado?.fechado_hoje ? 'abrir' : '', true);
 }
 $('menu').addEventListener('click', () => (menuAberto() ? fecharMenu() : abrirMenu()));
 veu.addEventListener('click', fecharMenu);

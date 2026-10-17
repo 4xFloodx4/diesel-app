@@ -1,5 +1,5 @@
 -- =====================================================================================
--- ZERAR O MOVIMENTO: apaga para sempre abastecimentos, chegadas de diesel, fechamentos, aferições, preços do diesel,
+-- ZERAR O MOVIMENTO: apaga para sempre abastecimentos, chegadas de diesel, aberturas e fechamentos, aferições, preços do diesel,
 -- lotes, fotos de movimento e o histórico. Os números dos abastecimentos (Nº da requisição) voltam a começar do 1.
 --
 -- FICAM: veículos, motoristas, vínculos placa-motorista, frentistas e PINs, tanques, bombas, contas (acessos),
@@ -27,7 +27,7 @@ begin
     raise notice 'Apagando % registro(s) de %', r.n, r.t;
   end loop;
   -- TRUNCATE não passa pelos gatilhos que proíbem apagar abastecimento e histórico (e zera a numeração)
-  truncate abastecimentos, lotes, chegadas, fechamentos, afericoes, precos_diesel, auditoria restart identity;
+  truncate abastecimentos, lotes, chegadas, fechamentos, afericoes, precos_diesel, auditoria, aberturas, leituras_bomba restart identity;
   delete from fotos where entidade <> 'veiculo';
   delete from sessoes_frentista;                     -- todo frentista entra de novo com nome e PIN
   update veiculos set km_desde = null where km_desde is not null;
@@ -36,6 +36,6 @@ begin
 end $$;
 
 -- Depois de rodar, apague os arquivos de foto do movimento no Storage (o SQL não consegue apagar arquivos):
--- Supabase > Storage > fotos > marque as pastas abastecimento, afericao, chegada e fechamento > Delete.
+-- Supabase > Storage > fotos > marque as pastas abastecimento, abertura, afericao, chegada e fechamento > Delete.
 -- Deixe a pasta "veiculo": são as fotos dos caminhões cadastrados.
 -- No Google Drive, as pastas de comprovantes antigos ficam; apague a pasta Abastecimentos se não quiser guardar.

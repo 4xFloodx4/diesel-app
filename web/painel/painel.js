@@ -165,11 +165,13 @@ async function atualizarContadores() {
       .then(rs => Object.fromEntries(rs.map((x, i) => [[...STATUS_DECISAO, 'Pronto'][i], x.count || 0]))).catch(() => null));
   if (!r) return;
   // alertas sem Visto (sem desconto; turno fechado com atraso ou sem medição) também contam em Decisões
-  const [sd, fa] = demo() ? [{ count: 0 }, { data: [] }] : await Promise.all([
+  const [sd, fa, ab] = demo() ? [{ count: 0 }, { data: [] }, { data: [] }] : await Promise.all([
     supabase.from('abastecimentos').select('id', { count: 'exact', head: true }).eq('desconto_confirmado', false).is('alerta_visto_em', null).neq('status', 'Cancelado'),
-    supabase.from('fechamentos').select('data').or('atrasado.eq.true,sem_medicao.eq.true').is('alerta_visto_em', null).limit(500),
-  ]).catch(() => [{ count: 0 }, { data: [] }]);
-  const dec = STATUS_DECISAO.reduce((s, k) => s + (r[k] || 0), 0) + (sd.count || 0) + new Set((fa.data || []).map(f => f.data)).size;
+    supabase.from('fechamentos').select('data').or('atrasado.eq.true,sem_medicao.eq.true,alerta_encerrante.not.is.null').is('alerta_visto_em', null).limit(500),
+    supabase.from('aberturas').select('data').not('alerta', 'is', null).is('alerta_visto_em', null).limit(500),
+  ]).catch(() => [{ count: 0 }, { data: [] }, { data: [] }]);
+  const dec = STATUS_DECISAO.reduce((s, k) => s + (r[k] || 0), 0) + (sd.count || 0) + new Set((fa.data || []).map(f => f.data)).size
+    + new Set((ab.data || []).map(f => f.data)).size;
   const marcar = (id, n, vermelho) => { const el = document.querySelector(`[data-qtd="${id}"]`); if (!el) return; el.hidden = !n; el.textContent = n; el.classList.toggle('vermelho', !!vermelho); };
   marcar('decisoes', dec, true); marcar('turnos', r.Pronto || 0);
   $('badge-menu').hidden = !dec; $('badge-menu').textContent = dec;
@@ -348,17 +350,24 @@ async function carregarAlertas() {
   const [semDesconto, fech] = await Promise.all([
     consulta(supabase.from('abastecimentos').select('id, data_hora, placa, motorista, litros, bomba, justificativa_desconto, frentistas(nome)')
       .eq('desconto_confirmado', false).is('alerta_visto_em', null).neq('status', 'Cancelado').order('data_hora').limit(300)),
-    consulta(supabase.from('fechamentos').select('data, atrasado, sem_medicao, motivo, criado_em, conta, frentistas(nome)')
-      .or('atrasado.eq.true,sem_medicao.eq.true').is('alerta_visto_em', null).order('data').limit(300)),
+    consulta(supabase.from('fechamentos').select('data, atrasado, sem_medicao, motivo, criado_em, conta, alerta_encerrante, frentistas(nome)')
+      .or('atrasado.eq.true,sem_medicao.eq.true,alerta_encerrante.not.is.null').is('alerta_visto_em', null).order('data').limit(300)),
   ]);
+  const abs = await consulta(supabase.from('aberturas').select('data, alerta, criado_em, frentistas(nome)').not('alerta', 'is', null).is('alerta_visto_em', null).order('data').limit(300));
   const dias = [...new Map(fech.map(f => [f.data, f])).values()];
-  return { semDesconto, dias };
+  const aberturas = [...new Map(abs.map(a => [a.data, a])).values()];
+  return { semDesconto, dias, aberturas };
 }
 function alertasHtml(a) {
   const itens = [
+    ...(a.aberturas || []).map(x => `<li class="alerta-item"><span class="tarja alerta"></span><div><div class="linha1"><b>Abertura de ${esc(diaSemana(x.data))}</b>
+        <span class="chip alerta">Diferença na abertura</span></div>
+        <p>${esc(x.alerta)} · aberto por <b>${esc(x.frentistas?.nome || '')}</b>, ${quandoLocal(x.criado_em)}.</p></div>
+        <button class="btn small ghost" type="button" data-acao="visto" data-tipo="abertura" data-chave="${esc(x.data)}">Visto</button></li>`),
     ...a.dias.map(f => `<li class="alerta-item"><span class="tarja hora"></span><div><div class="linha1"><b>Turno de ${esc(diaSemana(f.data))}</b>
-        <span class="chip hora">${f.sem_medicao ? 'Fechado sem medição' : 'Fechado com atraso'}</span></div>
-        <p>${f.sem_medicao ? `Fechado pelo painel (${esc(nomeCurto(f.conta))}): ${esc(f.motivo || '')}` : `O turno não foi fechado no prazo. Quem fechou foi <b>${esc(f.frentistas?.nome || '')}</b>, em ${quandoLocal(f.criado_em)}.`}</p></div>
+        <span class="chip hora">${f.sem_medicao ? 'Fechado sem medição' : f.atrasado ? 'Fechado com atraso' : 'Encerrante diferente no fechamento'}</span></div>
+        <p>${f.sem_medicao ? `Fechado pelo painel (${esc(nomeCurto(f.conta))}): ${esc(f.motivo || '')}` : f.atrasado ? `O turno não foi fechado no prazo. Quem fechou foi <b>${esc(f.frentistas?.nome || '')}</b>, em ${quandoLocal(f.criado_em)}.` : ''}
+          ${f.alerta_encerrante ? `${f.sem_medicao || f.atrasado ? '<br>' : ''}Encerrante: ${esc(f.alerta_encerrante)}.` : ''}</p></div>
         <button class="btn small ghost" type="button" data-acao="visto" data-tipo="fechamento" data-chave="${esc(f.data)}">Visto</button></li>`),
     ...a.semDesconto.map(r => `<li class="alerta-item"><span class="tarja pend"></span><div><div class="linha1">${placa(r.placa)}<span class="chip pend">Sem desconto</span>
         <span class="meta">${esc(r.motorista)} · ${nf(r.litros)} L · ${dataHora(r.data_hora)} · ${esc(r.frentistas?.nome || '')}</span></div>
@@ -381,7 +390,7 @@ TELAS.decisoes = async () => {
   const lista = [...r.lista.filter(a => a.status === 'Aguardando autorização'), ...r.lista.filter(a => a.status !== 'Aguardando autorização')];
   if (!lista.some(a => a.id === est.sel)) est.sel = lista[0]?.id ?? null;
   const sel = lista.find(a => a.id === est.sel);
-  const nAlertas = r.alertas.semDesconto.length + r.alertas.dias.length;
+  const nAlertas = r.alertas.semDesconto.length + r.alertas.dias.length + (r.alertas.aberturas || []).length;
   return `${cabeca('Decisões', 'Exceções das conferências (toda decisão pede um motivo e fica no histórico) e alertas para conferir.')}
     <section class="painel"><header><h2>Alertas para conferir</h2><span>${nAlertas ? `${nAlertas} alerta(s) · não travam nada; toque em Visto depois de conferir` : 'em dia'}</span></header>
       ${alertasHtml(r.alertas)}</section>
@@ -587,10 +596,16 @@ TELAS.tanques = async () => {
   const r = await carregar(async () => ({
     hoje: await rpc('calcular_fechamento', { p_dia: hojeISO() }),
     fs: await consulta(supabase.from('fechamentos').select('*, frentistas(nome)').order('data', { ascending: false }).order('tanque').limit(200)),
+    abs: await consulta(supabase.from('aberturas').select('*, frentistas(nome)').order('data', { ascending: false }).order('tanque').limit(200)),
+    ls: await consulta(supabase.from('leituras_bomba').select('*, frentistas(nome)').order('data_hora', { ascending: false }).limit(300)),
+    fab: await contarFotos('abertura'),
     cs: await consulta(supabase.from('chegadas').select('*, frentistas(nome)').order('data_hora', { ascending: false }).limit(200)),
     af: await consulta(supabase.from('afericoes').select('*, frentistas(nome)').order('data_hora', { ascending: false }).limit(200)),
     ff: await contarFotos('fechamento'), fc: await contarFotos('chegada'), fa: await contarFotos('afericao'), cad: await carregarCadastros(),
-  }), d => ({ hoje: d.hoje, fs: d.fechamentos, cs: d.chegadas, af: d.afericoes, ff: { [d.fechamentos[0].data]: 2 }, fc: { 7: 1 }, fa: {}, cad: cadDemo(d) }));
+  }), d => ({ hoje: d.hoje, fs: d.fechamentos, cs: d.chegadas, af: d.afericoes, ff: { [d.fechamentos[0].data]: 2 }, fc: { 7: 1 }, fa: {}, cad: cadDemo(d),
+    abs: [{ data: hojeISO(), tanque: 'TQ01', regua: 20738, ultimo_fechamento: 20730, oscilacao: 8, frentistas: { nome: 'Ana Ribeiro' }, criado_em: `${hojeISO()}T04:58:00`, alerta: null }],
+    ls: [{ data: hojeISO(), momento: 'abertura', bomba: 1, data_hora: `${hojeISO()}T04:58:00`, encerrante: 7070000, esperado: 7070000, diferenca: 0, frentistas: { nome: 'Ana Ribeiro' } },
+      { data: hojeISO(), momento: 'abertura', bomba: 2, data_hora: `${hojeISO()}T04:58:00`, encerrante: 512035, esperado: 512000, diferenca: 35, frentistas: { nome: 'Ana Ribeiro' } }], fab: {} }));
   if (!r) return;
   est.cad = r.cad;
   const c = r.cad;
@@ -607,6 +622,19 @@ TELAS.tanques = async () => {
         <div class="field"><label class="lbl" for="re-motivo">Fechou sem querer? Reabrir o turno de ${dataBR(r.fs[0].data)}: o fechamento é apagado e o frentista volta a lançar e fecha de novo</label>
           <textarea id="re-motivo" name="motivo" rows="2" maxlength="500" required minlength="5" placeholder="Ex.: frentista fechou antes do último abastecimento"></textarea></div>
         <button class="btn small warn" type="submit">Reabrir turno de ${dataBR(r.fs[0].data)}</button></form></div>` : ''}</section>
+    <section class="painel"><header><h2>Aberturas do turno</h2><span>régua da manhã comparada com o fechamento anterior (oscilação da noite)</span></header>
+      ${r.abs.length ? `<div class="tabela"><table><thead><tr><th>Dia</th><th>Tanque</th><th class="n">Régua na abertura</th><th class="n">Fechamento anterior</th><th class="n">Oscilação</th><th>Aberto por</th><th>Alerta</th><th></th></tr></thead><tbody>
+      ${r.abs.map(a => `<tr class="${Math.abs(a.oscilacao ?? 0) > TOL_REGUA ? 'divergente' : ''}"><td>${dataBR(a.data)}<span class="sub">${quandoLocal(a.criado_em).slice(6)}</span></td><td>${esc(a.tanque)}</td>
+        <td class="n">${nf(a.regua, 0)}</td><td class="n">${a.ultimo_fechamento == null ? '—' : nf(a.ultimo_fechamento, 0)}</td>
+        <td class="n">${a.oscilacao == null ? '—' : `${Number(a.oscilacao) > 0 ? '+' : ''}${nf(a.oscilacao, 0)}`}</td><td>${esc(a.frentistas?.nome || '')}</td>
+        <td class="quebra">${esc(a.alerta || '')}</td><td>${botaoFotos('abertura', a.data, `Abertura de ${dataBR(a.data)}`, r.fab[a.data])}</td></tr>`).join('')}
+      </tbody></table></div>` : '<p class="vazio">Nenhuma abertura ainda.</p>'}</section>
+    <section class="painel"><header><h2>Encerrantes lidos</h2><span>na abertura e no fechamento, comparados com o último lançamento · diferença = diesel que saiu sem lançamento</span></header>
+      ${r.ls.length ? `<div class="tabela"><table><thead><tr><th>Quando</th><th>Momento</th><th class="n">Bomba</th><th class="n">Lido</th><th class="n">No sistema</th><th class="n">Diferença</th><th>Frentista</th></tr></thead><tbody>
+      ${r.ls.map(l => `<tr class="${Math.abs(l.diferenca) > Number(est.regras?.tol_encerrante ?? 1) ? 'divergente' : ''}"><td>${dataHora(l.data_hora)}</td><td>${l.momento === 'abertura' ? 'Abertura' : 'Fechamento'}</td>
+        <td class="n">${esc(l.bomba)}</td><td class="n">${nf(l.encerrante, 3)}</td><td class="n">${nf(l.esperado, 3)}</td>
+        <td class="n">${Number(l.diferenca) > 0 ? '+' : ''}${nf(l.diferenca, 3)}</td><td>${esc(l.frentistas?.nome || '')}</td></tr>`).join('')}
+      </tbody></table></div>` : '<p class="vazio">Nenhuma leitura ainda.</p>'}</section>
     <section class="painel"><header><h2>Chegadas de diesel</h2><span>notas fiscais lançadas pelo posto</span></header>
       ${r.cs.length ? `<div class="tabela"><table><thead><tr><th>Data</th><th>Tanque</th><th>NF</th><th class="n">Litros</th><th class="n">Valor</th><th class="n">Régua</th><th>Caminhão</th><th>Lançado por</th><th>Alerta</th><th></th></tr></thead><tbody>
       ${r.cs.map(x => `<tr class="${x.alerta ? 'divergente' : ''}"><td>${dataHora(x.data_hora)}</td><td>${esc(x.tanque)}</td><td>${esc(x.nf)}</td><td class="n">${nf(x.litros, 0)}</td>
@@ -1160,6 +1188,8 @@ function blocoRegras() {
         ${num('Tanque padrão do caminhão novo (L)', 'tanque_padrao', nf(g.tanque_padrao ?? 1100, 0))}
         ${num('Lançar até quantos minutos depois de abastecer', 'atraso_lancamento_min', g.atraso_lancamento_min ?? 30)}
         ${num('Prazo para fechar o turno depois do fim (min)', 'prazo_fechamento_min', g.prazo_fechamento_min ?? 30)}
+        ${rotulo('Exigir abertura do turno (régua e encerrantes) antes de lançar', `<select name="exigir_abertura"><option value="true" ${g.exigir_abertura !== false ? 'selected' : ''}>Sim</option>
+          <option value="false" ${g.exigir_abertura === false ? 'selected' : ''}>Não</option></select>`)}
         ${rotulo('Posto só abre com o turno anterior fechado', `<select name="exigir_fechamento"><option value="true" ${g.exigir_fechamento !== false ? 'selected' : ''}>Sim</option>
           <option value="false" ${g.exigir_fechamento === false ? 'selected' : ''}>Não</option></select>`)}
         <button class="btn small" type="submit">Salvar regras</button></form>
@@ -1198,7 +1228,7 @@ trabalho.addEventListener('submit', async e => {
       tol_regua: v('tol_regua'), tol_afericao: v('tol_afericao') / 1000, tanque_padrao: v('tanque_padrao'),
       atraso_lancamento_min: Math.round(v('atraso_lancamento_min')), prazo_fechamento_min: Math.round(v('prazo_fechamento_min')) };
     if (Object.values(regras).some(x => Number.isNaN(x))) { avisar('Confira os números das regras.', 'warn'); return; }
-    const r = await agir(() => consulta(supabase.from('configuracoes').update({ ...regras, exigir_fechamento: d.exigir_fechamento === 'true', atualizado_em: new Date().toISOString() }).eq('id', 1).select()));
+    const r = await agir(() => consulta(supabase.from('configuracoes').update({ ...regras, exigir_fechamento: d.exigir_fechamento === 'true', exigir_abertura: d.exigir_abertura === 'true', atualizado_em: new Date().toISOString() }).eq('id', 1).select()));
     if (r?.length) { est.regras = r[0]; TOL_AFERICAO = Number(r[0].tol_afericao); TOL_REGUA = Number(r[0].tol_regua); avisar('Regras salvas. Valem para os próximos lançamentos.'); }
     else if (r) avisar('Só o administrador altera as regras.', 'warn');
     return;

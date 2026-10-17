@@ -1,7 +1,8 @@
 // Google Apps Script do Abastecimento Diesel. Roda sozinho a cada 10 minutos e faz duas coisas no Google Drive:
 //
 // 1. Comprovantes: o app envia a foto do comprovante (junto com o visor da bomba) para o Storage do Supabase, que serve
-//    só de fila. O script copia cada foto para  Abastecimentos / AAAA-MM / DD / Comprovante-PLACA-HHMM.jpg,
+//    só de fila. O script copia cada foto para  Abastecimentos / AAAA-MM / DD / Comprovante-PLACA-HHMM.jpg (e as fotos da
+//    abertura e do fechamento do turno, Abertura-HHMM-1.jpg e Fechamento-HHMM-1.jpg, na mesma pasta do dia),
 //    grava no banco o link do Drive (o painel abre a foto por ele) e apaga a foto do Supabase, que assim não enche.
 // 2. Relatório diário: depois que o frentista fecha o turno, preenche uma cópia do modelo
 //    "RELATÓRIO DIÁRIO DE ABASTECIMENTO - VERSÃO ONLINE" e salva o PDF em  Abastecimentos / AAAA-MM / DD /
@@ -50,7 +51,7 @@ function copiarComprovantes() {
     let feitos = 0, pdfs = 0;
     for (const f of fila) {
       if (Date.now() - inicio > LIMITE_MS) break;   // o resto vai na próxima execução
-      try { levar_(cfg, raiz, f); feitos++; } catch (e) { falhas.push(`#${f.abastecimento} ${f.placa}: ${e.message}`); }
+      try { levar_(cfg, raiz, f); feitos++; } catch (e) { falhas.push(`${f.nome || f.caminho}: ${e.message}`); }
     }
     for (const r of relatorios) {
       if (Date.now() - inicio > LIMITE_MS) break;
@@ -153,7 +154,8 @@ function levar_(cfg, raiz, f) {
     if (!p) throw new Error(`data inválida: ${f.data_hora}`);
     const pasta = subpasta_(subpasta_(raiz, `${p[1]}-${p[2]}`), p[3]);
     // Já copiado numa execução que caiu antes de gravar no banco: usa o mesmo arquivo (a descrição guarda o caminho)
-    const arquivo = jaCopiado_(pasta, f.caminho) || criar_(cfg, pasta, f, `Comprovante-${f.placa}-${p[4]}${p[5]}`);
+    // nome vem do banco: Comprovante-PLACA-HHMM, Abertura-HHMM-n ou Fechamento-HHMM-n
+    const arquivo = jaCopiado_(pasta, f.caminho) || criar_(cfg, pasta, f, f.nome || `Comprovante-${f.placa}-${p[4]}${p[5]}`);
     id = arquivo.getId();
     rpc_(cfg, 'foto_no_drive', { p_caminho: f.caminho, p_drive_id: id, p_drive_url: linkDrive_(id), p_fora_do_storage: false });
   }
@@ -167,7 +169,7 @@ function criar_(cfg, pasta, f, base) {
   let nome = `${base}.jpg`;
   for (let n = 2; pasta.getFilesByName(nome).hasNext(); n++) nome = `${base}-${n}.jpg`;   // mesmo caminhão duas vezes no mesmo minuto
   const arquivo = pasta.createFile(r.getBlob().setName(nome));
-  arquivo.setDescription(`Abastecimento #${f.abastecimento} · ${f.caminho}`);
+  arquivo.setDescription(`${f.abastecimento ? `Abastecimento #${f.abastecimento}` : `Turno (${f.entidade})`} · ${f.caminho}`);
   return arquivo;
 }
 

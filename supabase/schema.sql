@@ -133,6 +133,8 @@ alter table configuracoes add column if not exists atraso_lancamento_min integer
 alter table configuracoes add column if not exists prazo_fechamento_min integer not null default 30 check (prazo_fechamento_min between 0 and 720);
 -- Com o dia anterior aberto, o posto não abre: o frentista da manhã mede a régua (o tanque ficou parado à noite) e fecha
 alter table configuracoes add column if not exists exigir_fechamento boolean not null default true;
+-- O posto só lança depois de abrir o turno (régua + encerrantes + fotos)
+alter table configuracoes add column if not exists exigir_abertura boolean not null default true;
 
 -- Valor de uma regra da conferência (ex.: regra('km_salto'))
 create or replace function regra(p_nome text) returns numeric
@@ -400,6 +402,41 @@ create table if not exists afericoes (
 );
 create index if not exists ix_afer_bomba on afericoes (bomba, data_hora);
 
+-- Abertura do turno: no começo do dia o frentista mede a régua de cada tanque e anota o encerrante de cada bomba (com
+-- fotos). A régua da abertura vira o saldo inicial do dia; a diferença para o fechamento anterior (oscilação da noite)
+-- fica registrada. Encerrante que andou de noite sem lançamento vira alerta.
+create table if not exists aberturas (
+  id               bigint generated always as identity primary key,
+  data             date not null,
+  tanque           text not null references tanques (codigo),
+  regua            numeric(10, 1) not null check (regua >= 0),
+  ultimo_fechamento numeric(10, 1),
+  oscilacao        numeric(10, 1),
+  frentista_id     bigint references frentistas (id),
+  conta            text not null,
+  criado_em        timestamptz not null default now(),
+  alerta           text,
+  alerta_visto_por text,
+  alerta_visto_em  timestamptz,
+  unique (data, tanque)
+);
+
+-- Encerrante de cada bomba lido na abertura e no fechamento, comparado com o último conhecido pelo sistema
+create table if not exists leituras_bomba (
+  id            bigint generated always as identity primary key,
+  data          date not null,
+  momento       text not null check (momento in ('abertura', 'fechamento')),
+  bomba         integer not null references bombas (numero),
+  data_hora     timestamp(0) not null,
+  encerrante    numeric(14, 3) not null check (encerrante >= 0),
+  esperado      numeric(14, 3) not null,
+  diferenca     numeric(14, 3) generated always as (encerrante - esperado) stored,
+  frentista_id  bigint references frentistas (id),
+  conta         text not null,
+  unique (data, momento, bomba)
+);
+create index if not exists ix_leituras_bomba on leituras_bomba (bomba, data_hora);
+
 -- Fechamento atrasado (depois do prazo; em geral o frentista da manhã fechando o turno da noite) e fechamento sem
 -- medição (o supervisor fecha pelo painel quando não dá para medir). Os dois viram alerta até alguém tocar em Visto.
 alter table fechamentos add column if not exists atrasado boolean not null default false;
@@ -407,6 +444,8 @@ alter table fechamentos add column if not exists sem_medicao boolean not null de
 alter table fechamentos add column if not exists motivo text check (length(motivo) <= 500);
 alter table fechamentos add column if not exists alerta_visto_por text;
 alter table fechamentos add column if not exists alerta_visto_em timestamptz;
+-- Encerrante lido no fechamento diferente do último lançado (saiu diesel sem lançamento durante o dia)
+alter table fechamentos add column if not exists alerta_encerrante text;
 
 -- Preço do litro do diesel: o atual é o último registrado. O frentista altera no app (ele recebe o diesel e vê a NF).
 -- Cada mudança fica guardada, com quem mudou e de onde veio (digitado no app ou sugerido pela NF da chegada).
@@ -430,7 +469,7 @@ create table if not exists fotos (
   criado_em     timestamptz not null default now()
 );
 alter table fotos drop constraint if exists fotos_entidade_check;
-alter table fotos add constraint fotos_entidade_check check (entidade in ('fechamento', 'chegada', 'veiculo', 'afericao', 'abastecimento'));
+alter table fotos add constraint fotos_entidade_check check (entidade in ('fechamento', 'chegada', 'veiculo', 'afericao', 'abastecimento', 'abertura'));
 create index if not exists ix_fotos_chave on fotos (entidade, chave);
 -- Comprovante do abastecimento (foto do comprovante junto com o visor da bomba) vai para o Google Drive: um Apps Script
 -- copia para Abastecimentos/AAAA-MM/DD/Comprovante-PLACA-HHMM.jpg e apaga do Storage, que fica só como fila de passagem.
@@ -438,7 +477,8 @@ alter table fotos add column if not exists drive_id text;
 alter table fotos add column if not exists drive_url text;
 alter table fotos add column if not exists no_drive_em timestamptz;
 alter table fotos add column if not exists fora_do_storage boolean not null default false;
-create index if not exists ix_fotos_fila_drive on fotos (id) where entidade = 'abastecimento' and not fora_do_storage;
+drop index if exists ix_fotos_fila_drive;
+create index if not exists ix_fotos_fila_drive2 on fotos (id) where entidade in ('abastecimento', 'abertura', 'fechamento') and not fora_do_storage;
 
 create table if not exists auditoria (
   id           bigint generated always as identity primary key,
@@ -635,7 +675,8 @@ language sql stable as $$
     (select encerrante_inicial from bombas where numero = p_bomba),
     (select max(encerrante) from abastecimentos where bomba = p_bomba and (p_antes is null or data_hora < p_antes)
         and id is distinct from p_excluir and status <> 'Cancelado'),
-    (select max(encerrante) from afericoes where bomba = p_bomba and (p_antes is null or data_hora < p_antes)))
+    (select max(encerrante) from afericoes where bomba = p_bomba and (p_antes is null or data_hora < p_antes)),
+    (select max(encerrante) from leituras_bomba where bomba = p_bomba and momento = 'abertura' and (p_antes is null or data_hora < p_antes)))
 $$;
 
 -- ---------- Conferência (as mesmas regras que substituem o analista) ----------
@@ -737,6 +778,9 @@ language plpgsql security definer set search_path = public as $$
 declare v_caminho text; v_n integer := 0;
 begin
   if coalesce(cardinality(p_fotos), 0) > 10 then raise exception 'No máximo 10 fotos por registro.' using errcode = '22023'; end if;
+  if p_entidade in ('abertura', 'fechamento') and coalesce(cardinality(p_fotos), 0) > 5 then
+    raise exception 'No máximo 5 fotos na abertura e no fechamento.' using errcode = '22023';
+  end if;
   foreach v_caminho in array coalesce(p_fotos, '{}') loop
     if not foto_valida(v_caminho, p_entidade) then raise exception 'Foto inválida: %', v_caminho using errcode = '22023'; end if;
     insert into fotos (entidade, chave, caminho, frentista_id, conta) values (p_entidade, p_chave, v_caminho, p_frentista, meu_email())
@@ -753,7 +797,9 @@ declare v jsonb := '[]'; t tanques; v_ini numeric; v_ent numeric; v_sai numeric;
 begin
   perform exigir(array['posto', 'supervisor']);
   for t in select * from tanques order by codigo loop
-    select saldo_medido into v_ini from fechamentos where tanque = t.codigo and data < p_dia order by data desc limit 1;
+    -- saldo inicial: a régua da abertura do dia; sem abertura, a do último fechamento; sem nenhum, o do cadastro
+    select regua into v_ini from aberturas where tanque = t.codigo and data = p_dia;
+    if v_ini is null then select saldo_medido into v_ini from fechamentos where tanque = t.codigo and data < p_dia order by data desc limit 1; end if;
     v_ini := coalesce(v_ini, t.saldo_inicial);
     select coalesce(sum(litros), 0) into v_ent from chegadas
      where tanque = t.codigo and data_hora::date = p_dia and not cancelada;
@@ -819,6 +865,8 @@ begin
         select a.bomba, a.data_hora, a.visor_l, a.diferenca_l, f.nome as frentista from afericoes a join frentistas f on f.id = a.frentista_id
          order by a.data_hora desc limit 12) x), '[]'),
     'fechado_hoje', exists (select 1 from fechamentos where data = v_hoje),
+    'aberto_hoje', exists (select 1 from aberturas where data = v_hoje) or not (select exigir_abertura from configuracoes where id = 1),
+    'abertura_hoje', (select jsonb_agg(jsonb_build_object('tanque', tanque, 'regua', regua, 'oscilacao', oscilacao) order by tanque) from aberturas where data = v_hoje),
     -- dia que ficou aberto: o app só deixa fechar ele (o posto não abre). Com mais de um, o supervisor fecha os antigos.
     'dias_sem_fechamento', case when (select exigir_fechamento from configuracoes where id = 1) then to_jsonb(dias_sem_fechamento()) else '[]' end,
     'tanques_pendente', case when (select exigir_fechamento from configuracoes where id = 1) and cardinality(dias_sem_fechamento()) = 1
@@ -861,6 +909,68 @@ begin
     raise exception 'O turno de % não foi fechado. Feche o turno anterior antes de abrir o posto.', to_char(v[cardinality(v)], 'DD/MM')
       using errcode = '22023';
   end if;
+end $$;
+
+-- O posto só lança com o turno de hoje aberto (se a regra estiver ligada)
+create or replace function exigir_turno_aberto() returns void
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if (select exigir_abertura from configuracoes where id = 1) and not exists (select 1 from aberturas where data = hoje()) then
+    raise exception 'Abra o turno antes: meça a régua dos tanques e anote o encerrante das bombas.' using errcode = '22023';
+  end if;
+end $$;
+
+-- Lê os encerrantes (abertura ou fechamento) e devolve o texto do alerta quando algum diferir do esperado
+create or replace function gravar_leituras(p_dia date, p_momento text, p_encerrantes jsonb, p_frent bigint) returns text
+language plpgsql security definer set search_path = public as $$
+declare b bombas; v_enc numeric; v_esp numeric; v_alerta text[] := '{}';
+begin
+  for b in select * from bombas where ativa order by numero loop
+    v_enc := (p_encerrantes ->> b.numero::text)::numeric;
+    if v_enc is null or v_enc < 0 then raise exception 'Informe o encerrante da bomba %.', b.numero using errcode = '22023'; end if;
+    v_esp := encerrante_ate(b.numero, null);
+    insert into leituras_bomba (data, momento, bomba, data_hora, encerrante, esperado, frentista_id, conta)
+    values (p_dia, p_momento, b.numero, agora_local(), v_enc, v_esp, p_frent, meu_email());
+    if abs(v_enc - v_esp) > regra('tol_encerrante') then
+      v_alerta := v_alerta || format('bomba %s: encerrante %s, o sistema esperava %s (%s L %s)', b.numero, fmt(v_enc), fmt(v_esp),
+                                     fmt(abs(v_enc - v_esp)), case when v_enc > v_esp then 'a mais, sem lançamento' else 'a menos' end);
+    end if;
+  end loop;
+  return nullif(array_to_string(v_alerta, '; '), '');
+end $$;
+
+-- Abrir o turno de hoje: régua de cada tanque, encerrante de cada bomba e de 1 a 5 fotos. Só com o turno anterior fechado.
+create or replace function registrar_abertura(p_sessao text, p_medidos jsonb, p_encerrantes jsonb, p_fotos text[] default '{}') returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_frent bigint; v_dia date := hoje(); t tanques; v_med numeric; v_ult numeric; v_osc numeric; v_alertas text[] := '{}'; v_enc text; v_res jsonb := '[]';
+begin
+  perform exigir(array['posto', 'supervisor']);
+  v_frent := frentista_da_sessao(p_sessao);
+  perform exigir_turno_anterior_fechado();
+  if exists (select 1 from aberturas where data = v_dia) then raise exception 'O turno de hoje já foi aberto.' using errcode = '22023'; end if;
+  if exists (select 1 from fechamentos where data = v_dia) then raise exception 'O turno de hoje já foi fechado.' using errcode = '22023'; end if;
+  if coalesce(cardinality(p_fotos), 0) = 0 then raise exception 'Tire a foto da régua e das bombas (de 1 a 5 fotos).' using errcode = '22023'; end if;
+  if not exists (select 1 from tanques) then raise exception 'Nenhum tanque cadastrado. Peça ao supervisor.' using errcode = '22023'; end if;
+  for t in select * from tanques order by codigo loop
+    v_med := (p_medidos ->> t.codigo)::numeric;
+    if v_med is null or v_med < 0 then raise exception 'Informe a medição do tanque %.', t.codigo using errcode = '22023'; end if;
+    select saldo_medido into v_ult from fechamentos where tanque = t.codigo and data < v_dia order by data desc limit 1;
+    v_osc := v_med - v_ult;
+    insert into aberturas (data, tanque, regua, ultimo_fechamento, oscilacao, frentista_id, conta)
+    values (v_dia, t.codigo, v_med, v_ult, v_osc, v_frent, meu_email());
+    if abs(v_osc) > regra('tol_regua') then
+      v_alertas := v_alertas || format('%s: régua %s L na abertura, %s L no fechamento anterior (%s%s L)', t.codigo, fmt(v_med), fmt(v_ult),
+                                       case when v_osc > 0 then '+' else '' end, fmt(v_osc));
+    end if;
+    v_res := v_res || jsonb_build_object('tanque', t.codigo, 'regua', v_med, 'ultimo_fechamento', v_ult, 'oscilacao', v_osc);
+  end loop;
+  v_enc := gravar_leituras(v_dia, 'abertura', p_encerrantes, v_frent);
+  if v_enc is not null then v_alertas := v_alertas || v_enc; end if;
+  if cardinality(v_alertas) > 0 then update aberturas set alerta = array_to_string(v_alertas, '; ') where data = v_dia; end if;
+  perform registrar_fotos('abertura', v_dia::text, p_fotos, v_frent);
+  perform auditar('abertura.registrada', 'abertura', v_dia::text, jsonb_build_object('medidos', p_medidos, 'encerrantes', p_encerrantes,
+                  'frentista', (select nome from frentistas where id = v_frent), 'fotos', cardinality(p_fotos), 'alerta', array_to_string(v_alertas, '; ')));
+  return jsonb_build_object('tanques', v_res, 'alerta', nullif(array_to_string(v_alertas, '; '), ''));
 end $$;
 
 -- Abastecimento: agora tem que ser horário do turno, e a hora digitada também, de no máximo N minutos atrás
@@ -936,6 +1046,7 @@ begin
     raise exception 'Tire a foto do comprovante junto com o visor da bomba (uma foto).' using errcode = '22023';
   end if;
   perform exigir_turno_anterior_fechado();
+  perform exigir_turno_aberto();
   perform validar_data_lancamento(v_dh);
   perform validar_hora_abastecimento(v_dh);   -- fora do horário não entra mais (nem com justificativa)
   v_fora := false;
@@ -1001,6 +1112,7 @@ begin
   select * into v_ex from chegadas where uuid = (r ->> 'uuid')::uuid;
   if v_ex.id is not null then return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'alerta', v_ex.alerta); end if;
   perform exigir_turno_anterior_fechado();
+  perform exigir_turno_aberto();
   perform validar_data_lancamento(date_trunc('second', (r ->> 'data_hora')::timestamp));
   v_lt := (r ->> 'litros')::numeric;
   if v_lt is null or v_lt <= 0 or v_lt >= 100000 then raise exception 'Litros da nota fora do permitido.' using errcode = '22023'; end if;
@@ -1042,10 +1154,12 @@ end $$;
 -- ficou parado à noite). Depois do prazo (fim do turno + N minutos) o fechamento vale, mas fica marcado como atrasado.
 -- Com mais de um dia aberto, os mais antigos o supervisor fecha pelo painel (sem medição): só o último dá para medir.
 drop function if exists registrar_fechamento(text, jsonb, text[]);
-create or replace function registrar_fechamento(p_sessao text, p_medidos jsonb, p_fotos text[] default '{}', p_dia date default null) returns jsonb
+drop function if exists registrar_fechamento(text, jsonb, text[], date);
+create or replace function registrar_fechamento(p_sessao text, p_medidos jsonb, p_fotos text[] default '{}', p_dia date default null,
+                                                p_encerrantes jsonb default null) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare v_dia date := coalesce(p_dia, hoje()); t jsonb; v_med numeric; v_dif numeric; v_res jsonb := '[]'; v_frent bigint;
-        v_pend date[] := dias_sem_fechamento(); v_c configuracoes; v_atrasado boolean; v_quem text[];
+        v_pend date[] := dias_sem_fechamento(); v_c configuracoes; v_atrasado boolean; v_quem text[]; v_alerta_enc text;
 begin
   perform exigir(array['posto', 'supervisor']);
   v_frent := frentista_da_sessao(p_sessao);
@@ -1083,6 +1197,10 @@ begin
     v_res := v_res || jsonb_build_object('tanque', t ->> 'tanque', 'saldo_calculado', (t ->> 'saldo_calculado')::numeric,
                                          'saldo_medido', v_med, 'diferenca', v_dif, 'alerta', abs(v_dif) > regra('tol_regua'));
   end loop;
+  if p_encerrantes is not null or exists (select 1 from bombas where ativa) then
+    v_alerta_enc := gravar_leituras(v_dia, 'fechamento', coalesce(p_encerrantes, '{}'), v_frent);
+    update fechamentos set alerta_encerrante = v_alerta_enc where data = v_dia;
+  end if;
   perform registrar_fotos('fechamento', v_dia::text, p_fotos, v_frent);
   perform auditar('fechamento.registrado', 'fechamento', v_dia::text,
                   jsonb_build_object('medidos', p_medidos, 'frentista_id', v_frent, 'frentista', (select nome from frentistas where id = v_frent),
@@ -1109,6 +1227,7 @@ begin
     raise exception 'Bomba % não existe.', coalesce(v_bomba::text, '(vazia)') using errcode = '22023';
   end if;
   perform exigir_turno_anterior_fechado();
+  perform exigir_turno_aberto();
   v_dh := date_trunc('second', (r ->> 'data_hora')::timestamp);
   perform validar_data_lancamento(v_dh);
   v_visor := (r ->> 'visor')::numeric;
@@ -1455,6 +1574,8 @@ begin
     update abastecimentos set alerta_visto_por = meu_email(), alerta_visto_em = now() where id = p_chave::bigint and not desconto_confirmado and alerta_visto_em is null;
   elsif p_tipo = 'fechamento' then
     update fechamentos set alerta_visto_por = meu_email(), alerta_visto_em = now() where data = p_chave::date and alerta_visto_em is null;
+  elsif p_tipo = 'abertura' then
+    update aberturas set alerta_visto_por = meu_email(), alerta_visto_em = now() where data = p_chave::date and alerta is not null and alerta_visto_em is null;
   else raise exception 'Tipo de alerta inválido.' using errcode = '22023';
   end if;
   if not found then raise exception 'Este alerta já foi visto ou não existe.' using errcode = 'P0002'; end if;
@@ -1555,6 +1676,7 @@ begin
   if v_ultimo is null or p_data is distinct from v_ultimo then
     raise exception 'Só dá para reabrir o último turno fechado%.', coalesce(' (' || to_char(v_ultimo, 'DD/MM') || ')', '') using errcode = '22023';
   end if;
+  delete from leituras_bomba where data = p_data and momento = 'fechamento';   -- o fechamento novo lê os encerrantes de novo
   with d as (delete from fechamentos where data = p_data returning *)
   select jsonb_agg(jsonb_build_object('tanque', tanque, 'saldo_calculado', saldo_calculado, 'saldo_medido', saldo_medido, 'diferenca', diferenca,
                                       'frentista', (select nome from frentistas where id = d.frentista_id), 'fechado_em', criado_em) order by tanque)
@@ -1598,13 +1720,24 @@ end $$;
 -- ---------- Google Drive: comprovantes dos abastecimentos ----------
 -- Chamadas só pelo Apps Script do Google (scripts/drive-comprovantes.gs), com a chave service_role guardada nas
 -- propriedades do script. Fila: comprovante que ainda está no Storage (sem cópia no Drive, ou copiado e ainda não apagado).
+-- Comprovantes (Comprovante-PLACA-HHMM) e fotos da abertura e do fechamento do turno (Abertura-HHMM-n, Fechamento-HHMM-n),
+-- todos na pasta do dia
+drop function if exists fotos_para_drive(integer);
 create or replace function fotos_para_drive(p_limite integer default 25) returns jsonb
 language sql stable security definer set search_path = public as $$
   select coalesce(jsonb_agg(x order by x.id), '[]') from (
-    select f.id, f.caminho, f.drive_id, a.id as abastecimento, a.placa, to_char(a.data_hora, 'YYYY-MM-DD"T"HH24:MI:SS') as data_hora
+    select f.id, f.caminho, f.drive_id, f.entidade, a.id as abastecimento, a.placa,
+           to_char(a.data_hora, 'YYYY-MM-DD"T"HH24:MI:SS') as data_hora, 'Comprovante-' || a.placa || '-' || to_char(a.data_hora, 'HH24MI') as nome
       from fotos f join abastecimentos a on a.id::text = f.chave
      where f.entidade = 'abastecimento' and not f.fora_do_storage
-     order by f.id limit least(greatest(coalesce(p_limite, 25), 1), 100)) x
+    union all
+    select f.id, f.caminho, f.drive_id, f.entidade, null, null,
+           f.chave || 'T' || to_char(f.criado_em at time zone 'America/Sao_Paulo', 'HH24:MI:SS'),
+           initcap(f.entidade) || '-' || to_char(f.criado_em at time zone 'America/Sao_Paulo', 'HH24MI') || '-'
+             || row_number() over (partition by f.entidade, f.chave order by f.id)
+      from fotos f
+     where f.entidade in ('abertura', 'fechamento') and not f.fora_do_storage and f.chave ~ '^\d{4}-\d{2}-\d{2}$'
+     order by 1 limit least(greatest(coalesce(p_limite, 25), 1), 100)) x
 $$;
 
 -- Copiado para o Drive (p_fora_do_storage = false) e, depois, apagado do Storage (true)
@@ -1616,7 +1749,7 @@ begin
   if coalesce(p_drive_url, '') !~ '^https://drive\.google\.com/' then raise exception 'Link do Drive inválido.' using errcode = '22023'; end if;
   update fotos set drive_id = p_drive_id, drive_url = left(p_drive_url, 500), no_drive_em = coalesce(no_drive_em, now()),
          fora_do_storage = fora_do_storage or coalesce(p_fora_do_storage, false)
-   where caminho = p_caminho and entidade = 'abastecimento';
+   where caminho = p_caminho and entidade in ('abastecimento', 'abertura', 'fechamento');
   if not found then raise exception 'Foto não encontrada.' using errcode = 'P0002'; end if;
 end $$;
 
@@ -1642,7 +1775,7 @@ end $$;
 -- As proteções continuam: abastecimento não se apaga, foto registrada não muda, conta de desenvolvedor só pelo SQL.
 create or replace function dev_tabelas() returns text[]
 language sql immutable as $$
-  select array['abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'lotes', 'precos_diesel', 'fotos', 'relatorios_diarios',
+  select array['abastecimentos', 'chegadas', 'aberturas', 'leituras_bomba', 'fechamentos', 'afericoes', 'lotes', 'precos_diesel', 'fotos', 'relatorios_diarios',
                'veiculos', 'motoristas', 'veiculo_motoristas', 'caminhoes_diesel', 'frentistas', 'tanques', 'bombas', 'acessos', 'configuracoes', 'aparelhos']
 $$;
 
@@ -1726,8 +1859,8 @@ begin
     execute $q$select coalesce(sum((metadata ->> 'size')::bigint), 0) from storage.objects where bucket_id = 'fotos'$q$ into v_fotos_bytes;
   end if;
   return jsonb_build_object(
-    'comprovantes_na_fila', (select count(*) from fotos where entidade = 'abastecimento' and not fora_do_storage),
-    'fila_desde', (select min(criado_em) from fotos where entidade = 'abastecimento' and not fora_do_storage),
+    'comprovantes_na_fila', (select count(*) from fotos where entidade in ('abastecimento', 'abertura', 'fechamento') and not fora_do_storage),
+    'fila_desde', (select min(criado_em) from fotos where entidade in ('abastecimento', 'abertura', 'fechamento') and not fora_do_storage),
     'ultimo_no_drive', (select max(no_drive_em) from fotos),
     'relatorios_esperando', jsonb_array_length(relatorios_para_drive()),
     'ultimo_relatorio', (select max(gerado_em) from relatorios_diarios),
@@ -1743,7 +1876,7 @@ declare t text;
 begin
   foreach t in array array['acessos', 'frentistas', 'frentistas_pin', 'sessoes_frentista', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'caminhoes_diesel',
                            'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'auditoria', 'configuracoes',
-                           'relatorios_diarios', 'aparelhos'] loop
+                           'relatorios_diarios', 'aparelhos', 'aberturas', 'leituras_bomba'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon', t);
     execute format('drop policy if exists supervisor_le on %I', t);
@@ -1751,7 +1884,8 @@ begin
   end loop;
   -- Leitura pelo painel (PINs, sessões e auditoria têm regra própria)
   foreach t in array array['acessos', 'frentistas', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'bombas', 'caminhoes_diesel',
-                           'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'configuracoes', 'relatorios_diarios'] loop
+                           'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'configuracoes', 'relatorios_diarios',
+                           'aberturas', 'leituras_bomba'] loop
     execute format('create policy supervisor_le on %I for select to authenticated using (sou_gestor())', t);
   end loop;
   -- Cadastros: supervisor e administrador editam direto (com histórico automático pelos gatilhos)
@@ -1788,7 +1922,7 @@ begin
     execute $p$create policy fotos_enviar on storage.objects for insert to authenticated with check (
       bucket_id = 'fotos' and public.meu_papel() is not null
       and (public.foto_valida(name, 'fechamento') or public.foto_valida(name, 'chegada') or public.foto_valida(name, 'veiculo')
-           or public.foto_valida(name, 'afericao') or public.foto_valida(name, 'abastecimento')))$p$;
+           or public.foto_valida(name, 'afericao') or public.foto_valida(name, 'abastecimento') or public.foto_valida(name, 'abertura')))$p$;
     execute $p$create policy fotos_ver on storage.objects for select to authenticated using (
       bucket_id = 'fotos' and public.sou_gestor())$p$;
     execute $p$create policy fotos_apagar on storage.objects for delete to authenticated using (
@@ -1808,7 +1942,8 @@ end $$;
 
 grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frentista(bigint, text), sair_frentista(text), informar_versao(text),
   dev_estrutura(), dev_salvar(text, jsonb, jsonb), dev_apagar(text, jsonb), dev_saude(),
-  registrar_abastecimento(text, jsonb, text[]), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[], date),
+  registrar_abastecimento(text, jsonb, text[]), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[], date, jsonb),
+  registrar_abertura(text, jsonb, jsonb, text[]),
   fechar_sem_medicao(date, text), marcar_visto(text, text), folha_do_dia(date), dias_sem_fechamento(),
   registrar_afericao(text, jsonb, text[]),
   cadastrar_veiculo_app(text, text, numeric, integer, text), cadastrar_motorista_app(text, text, text),
