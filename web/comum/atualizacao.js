@@ -42,6 +42,12 @@ async function baixar(info, aoComecar) {
   return CapacitorUpdater.download({ url: info.url, version: info.version, checksum: info.checksum });
 }
 
+/** Versão das telas que este aparelho está usando (o pacote baixado, ou a que veio no APK / no site). */
+export async function versaoAtual() {
+  if (!nativo) return VERSAO_WEB;
+  try { return await versaoInstalada(); } catch { return VERSAO_WEB; }
+}
+
 export async function prepararAtualizacao() {
   if (!nativo) return;
   await confirmarAbertura();

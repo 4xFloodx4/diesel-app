@@ -123,6 +123,13 @@ export function descrever(e, ctx = {}) {
       frase = `corrigiu o caminhão ${placa(e.entidade_id)}${partes.length ? `: ${partes.join(', ')}` : ''}.`;
       break;
     }
+    case 'dev.alterou': case 'dev.incluiu': case 'dev.apagou': {
+      tipo = 'cadastro';
+      const verbo = { 'dev.alterou': 'alterou', 'dev.incluiu': 'incluiu', 'dev.apagou': 'apagou' }[e.acao];
+      const r = resumoMudancas(mud);
+      frase = `${verbo} direto no banco a linha <b>${id}</b> de <b>${esc(e.entidade)}</b>${r && e.acao === 'dev.alterou' ? `: ${r}` : ''}.`;
+      break;
+    }
     case 'veiculo.foto_anexada': tipo = 'cadastro'; frase = `anexou uma foto ao veículo ${placa(e.entidade_id)}.`; break;
     default:
       if (grupo === 'cadastro') {

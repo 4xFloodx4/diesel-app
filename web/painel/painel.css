@@ -233,4 +233,17 @@ textarea { min-height: 70px; resize: vertical; }
 .lista-exp .btn { margin-top: auto; }
 .corpo > .filtros { padding: 0 0 14px; }
 a.lk { color: var(--azul); font-weight: 500; text-decoration: none; }
+/* Banco de dados do desenvolvedor */
+.tabs-db { display: flex; flex-wrap: wrap; gap: 5px; }
+.tabs-db button { font: 500 12.5px var(--f-texto); padding: 5px 10px; border-radius: 6px; border: 1px solid var(--risco-forte); background: var(--placa); color: var(--tinta-2); cursor: pointer; }
+.tabs-db button[aria-pressed="true"] { background: var(--azul-fundo); border-color: var(--azul); color: var(--azul); }
+.filtros-db { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.filtros-db input { width: min(100%, 320px); }
+.aviso-db { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; background: var(--azul-fundo); color: var(--azul); border-radius: 6px; padding: 8px 12px; }
+.grade-db td { white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; }
+.grade-db td.ed { cursor: text; }
+.grade-db td.ed:hover { background: var(--placa-2); }
+.grade-db td.mudou, .grade-db tr.nova td.ed { background: var(--azul-fundo); }
+.grade-db td input { min-height: 30px; padding: 3px 6px; font-size: 12.5px; min-width: 120px; }
+.grade-db th { white-space: nowrap; }
 @media (max-width: 700px) { .turno-card .passos { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }

@@ -1485,13 +1485,130 @@ begin
   if not found then raise exception 'Foto não encontrada.' using errcode = 'P0002'; end if;
 end $$;
 
+-- ---------- Desenvolvedor: banco de dados pelo painel e saúde do sistema ----------
+-- Celulares e versões das telas: cada celular avisa a versão que está usando quando abre (para o desenvolvedor ver quem
+-- ficou para trás na atualização)
+create table if not exists aparelhos (
+  conta     text primary key,
+  versao    text not null check (length(versao) <= 60),
+  visto_em  timestamptz not null default now()
+);
+
+create or replace function informar_versao(p_versao text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform exigir(array['posto', 'supervisor']);
+  if coalesce(p_versao, '') !~ '^[\w.-]{1,60}$' then return; end if;
+  insert into aparelhos (conta, versao) values (meu_email(), p_versao)
+  on conflict (conta) do update set versao = excluded.versao, visto_em = now();
+end $$;
+
+-- Tabelas que o desenvolvedor edita pelo painel. Ficam de fora: PINs, sessões e o histórico (que só se lê).
+-- As proteções continuam: abastecimento não se apaga, foto registrada não muda, conta de desenvolvedor só pelo SQL.
+create or replace function dev_tabelas() returns text[]
+language sql immutable as $$
+  select array['abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'lotes', 'precos_diesel', 'fotos', 'relatorios_diarios',
+               'veiculos', 'motoristas', 'veiculo_motoristas', 'caminhoes_diesel', 'frentistas', 'tanques', 'bombas', 'acessos', 'configuracoes', 'aparelhos']
+$$;
+
+create or replace function dev_chave(p_tabela text) returns text[]
+language sql stable security definer set search_path = public as $$
+  select array_agg(a.attname::text order by array_position(i.indkey::int2[], a.attnum))
+    from pg_index i join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any (i.indkey)
+   where i.indrelid = ('public.' || quote_ident(p_tabela))::regclass and i.indisprimary
+$$;
+
+create or replace function dev_estrutura() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform exigir(array['desenvolvedor']);
+  return (select jsonb_agg(jsonb_build_object('tabela', t, 'chave', to_jsonb(dev_chave(t)),
+            'colunas', (select jsonb_agg(jsonb_build_object('nome', c.column_name, 'tipo', c.data_type,
+                          'editavel', c.is_generated = 'NEVER' and coalesce(c.identity_generation, '') <> 'ALWAYS') order by c.ordinal_position)
+                          from information_schema.columns c where c.table_schema = 'public' and c.table_name = t)) order by t)
+            from unnest(dev_tabelas()) t);
+end $$;
+
+-- Inclui (p_chave nulo) ou altera uma linha. Os valores chegam como JSON e o banco converte para o tipo de cada coluna.
+create or replace function dev_salvar(p_tabela text, p_chave jsonb, p_valores jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_cols text; v_pk text[] := dev_chave(p_tabela); v_onde text; v_antes jsonb; v_depois jsonb;
+begin
+  perform exigir(array['desenvolvedor']);
+  if not (p_tabela = any (dev_tabelas())) then raise exception 'Esta tabela não pode ser editada pelo painel.' using errcode = '42501'; end if;
+  select string_agg(quote_ident(c.column_name), ', ' order by c.ordinal_position) into v_cols
+    from information_schema.columns c
+   where c.table_schema = 'public' and c.table_name = p_tabela and c.is_generated = 'NEVER' and coalesce(c.identity_generation, '') <> 'ALWAYS'
+     and c.column_name in (select jsonb_object_keys(coalesce(p_valores, '{}')));
+  if v_cols is null then raise exception 'Nada para salvar.' using errcode = '22023'; end if;
+  if p_chave is null then
+    execute format('insert into %I (%s) select %s from jsonb_populate_record(null::%I, $1) returning to_jsonb(%I.*)',
+                   p_tabela, v_cols, v_cols, p_tabela, p_tabela) into v_depois using p_valores;
+  else
+    v_onde := format('(%s) = (select %s from jsonb_populate_record(null::%I, $2))',
+                     array_to_string(array(select quote_ident(x) from unnest(v_pk) x), ', '),
+                     array_to_string(array(select quote_ident(x) from unnest(v_pk) x), ', '), p_tabela);
+    execute format('select to_jsonb(t.*) from %I t where %s', p_tabela, replace(v_onde, '$2', '$1')) into v_antes using p_chave;
+    if v_antes is null then raise exception 'Registro não encontrado (alguém mudou ou apagou?). Recarregue a tabela.' using errcode = 'P0002'; end if;
+    execute format('update %I set (%s) = (select %s from jsonb_populate_record(null::%I, $1)) where %s returning to_jsonb(%I.*)',
+                   p_tabela, v_cols, v_cols, p_tabela, v_onde, p_tabela) into v_depois using p_valores, p_chave;
+  end if;
+  perform auditar_dev(case when p_chave is null then 'dev.incluiu' else 'dev.alterou' end, p_tabela, v_antes, v_depois, v_pk);
+  return v_depois - 'cpf';
+end $$;
+
+create or replace function dev_apagar(p_tabela text, p_chave jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_pk text[] := dev_chave(p_tabela); v_antes jsonb;
+begin
+  perform exigir(array['desenvolvedor']);
+  if not (p_tabela = any (dev_tabelas())) then raise exception 'Esta tabela não pode ser editada pelo painel.' using errcode = '42501'; end if;
+  execute format('delete from %I where (%s) = (select %s from jsonb_populate_record(null::%I, $1)) returning to_jsonb(%I.*)', p_tabela,
+                 array_to_string(array(select quote_ident(x) from unnest(v_pk) x), ', '),
+                 array_to_string(array(select quote_ident(x) from unnest(v_pk) x), ', '), p_tabela, p_tabela) into v_antes using p_chave;
+  if v_antes is null then raise exception 'Registro não encontrado. Recarregue a tabela.' using errcode = 'P0002'; end if;
+  perform auditar_dev('dev.apagou', p_tabela, v_antes, null, v_pk);
+end $$;
+
+-- Cadastros já entram no histórico pelos próprios gatilhos; o resto (movimento) é registrado aqui, com o CPF mascarado
+create or replace function auditar_dev(p_acao text, p_tabela text, p_antes jsonb, p_depois jsonb, p_pk text[]) returns void
+language plpgsql security definer set search_path = public as $$
+declare m jsonb;
+begin
+  if p_tabela in ('veiculos', 'motoristas', 'veiculo_motoristas', 'caminhoes_diesel', 'frentistas', 'tanques', 'bombas', 'acessos', 'configuracoes') then return; end if;
+  m := jsonb_build_object('antes', case when p_antes ? 'cpf' then p_antes || jsonb_build_object('cpf', '***' || right(p_antes ->> 'cpf', 2)) else p_antes end,
+                          'depois', case when p_depois ? 'cpf' then p_depois || jsonb_build_object('cpf', '***' || right(p_depois ->> 'cpf', 2)) else p_depois end);
+  perform auditar(p_acao, p_tabela, (select string_agg(coalesce(p_depois, p_antes) ->> x, ' · ') from unnest(p_pk) x), m);
+end $$;
+
+-- Saúde do sistema: fila do Drive, relatórios esperando, espaço usado e a versão das telas em cada celular
+create or replace function dev_saude() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_fotos_bytes bigint;
+begin
+  perform exigir(array['desenvolvedor']);
+  if to_regclass('storage.objects') is not null then
+    execute $q$select coalesce(sum((metadata ->> 'size')::bigint), 0) from storage.objects where bucket_id = 'fotos'$q$ into v_fotos_bytes;
+  end if;
+  return jsonb_build_object(
+    'comprovantes_na_fila', (select count(*) from fotos where entidade = 'abastecimento' and not fora_do_storage),
+    'fila_desde', (select min(criado_em) from fotos where entidade = 'abastecimento' and not fora_do_storage),
+    'ultimo_no_drive', (select max(no_drive_em) from fotos),
+    'relatorios_esperando', jsonb_array_length(relatorios_para_drive()),
+    'ultimo_relatorio', (select max(gerado_em) from relatorios_diarios),
+    'banco_bytes', pg_database_size(current_database()),
+    'fotos_bytes', v_fotos_bytes,
+    'aparelhos', coalesce((select jsonb_agg(jsonb_build_object('conta', p.conta, 'nome', a.nome, 'papel', a.papel, 'versao', p.versao, 'visto_em', p.visto_em)
+                                    order by p.visto_em desc) from aparelhos p left join acessos a on a.email = p.conta), '[]'));
+end $$;
+
 -- ---------- RLS: ninguém vê nada sem estar em "acessos" ----------
 do $$
 declare t text;
 begin
   foreach t in array array['acessos', 'frentistas', 'frentistas_pin', 'sessoes_frentista', 'veiculos', 'motoristas', 'veiculo_motoristas', 'tanques', 'caminhoes_diesel',
                            'bombas', 'lotes', 'abastecimentos', 'chegadas', 'fechamentos', 'afericoes', 'precos_diesel', 'fotos', 'auditoria', 'configuracoes',
-                           'relatorios_diarios'] loop
+                           'relatorios_diarios', 'aparelhos'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon', t);
     execute format('drop policy if exists supervisor_le on %I', t);
@@ -1508,6 +1625,9 @@ begin
   end loop;
 end $$;
 -- frentistas_pin e sessoes_frentista: sem política nenhuma (só as funções acessam)
+-- Celulares e versões: só o desenvolvedor lê (pelo painel, na saúde do sistema e no banco de dados)
+drop policy if exists dev_le on aparelhos;
+create policy dev_le on aparelhos for select to authenticated using (meu_papel() = 'desenvolvedor');
 -- Horário do turno: administrador ou desenvolvedor
 drop policy if exists admin_edita on configuracoes;
 create policy admin_edita on configuracoes for update to authenticated
@@ -1551,7 +1671,8 @@ begin
   end loop;
 end $$;
 
-grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frentista(bigint, text), sair_frentista(text),
+grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frentista(bigint, text), sair_frentista(text), informar_versao(text),
+  dev_estrutura(), dev_salvar(text, jsonb, jsonb), dev_apagar(text, jsonb), dev_saude(),
   registrar_abastecimento(text, jsonb, text[]), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[]),
   registrar_afericao(text, jsonb, text[]),
   cadastrar_veiculo_app(text, text, numeric, integer, text), cadastrar_motorista_app(text, text, text),

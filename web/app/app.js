@@ -6,7 +6,7 @@ import { App } from '@capacitor/app';
 import { Haptics, NotificationType } from '@capacitor/haptics';
 import { esc, nf, parseNum, hhmm, hojeISO, horaAgora, classeStatus, ler, gravar } from '../comum/util.js';
 import { tirarFoto, enviarFotos } from '../comum/fotos.js';
-import { vigiarAtualizacoes, situacaoAtualizacao, novidadeAplicada, confirmarAbertura } from '../comum/atualizacao.js';
+import { vigiarAtualizacoes, situacaoAtualizacao, novidadeAplicada, confirmarAbertura, versaoAtual } from '../comum/atualizacao.js';
 import { aplicarTema, htmlTema, definirTema, protegerContraMoldura } from '../comum/tema.js';
 import { htmlGuia, htmlAbasGuia } from '../comum/guia.js';
 
@@ -1083,6 +1083,8 @@ async function carregar() {
       setTimeout(() => { if (aviso === msg) { aviso = null; render(); } }, 9000);
     }
     vigiarAtualizacoes({ livre: appLivre, mudou: () => desenharAtualizacao() });
+    // Avisa a versão das telas deste celular (o desenvolvedor vê quem ficou para trás, em Saúde do sistema)
+    if (estado) versaoAtual().then(v => rpc('informar_versao', { p_versao: v })).catch(() => {});
   }
 }
 let atualizacaoVista = false;

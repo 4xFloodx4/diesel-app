@@ -9,7 +9,7 @@ import { tirarFoto, enviarFotos, linksDasFotos } from '../comum/fotos.js';
 import { aplicarTema, definirTema, htmlTema, demoLigado, alternarDemo, htmlChaveDemo, htmlFaixaDemo, protegerContraMoldura } from '../comum/tema.js';
 import { htmlGuia, htmlAbasGuia } from '../comum/guia.js';
 import { htmlAuditoria, htmlFiltroAud, descrever } from '../comum/auditoria.js';
-import { prepararAtualizacao } from '../comum/atualizacao.js';
+import { prepararAtualizacao, versaoAtual } from '../comum/atualizacao.js';
 import { dadosDemo } from './demo.js';
 
 protegerContraMoldura();
@@ -114,6 +114,7 @@ async function iniciarAgora() {
   if (!MENU.some(([, itens]) => itens.some(i => i[0] === est.tela && podeVer(i)))) est.tela = 'resumo';
   montarMenu();
   abrir(est.tela);
+  if (nativo) versaoAtual().then(v => rpc('informar_versao', { p_versao: v })).catch(() => {});   // painel aberto no app do celular
 }
 
 // ---------- Menu lateral ----------
@@ -135,6 +136,7 @@ const MENU = [
   ['Exportar', [['turnos', 'Fechamento do turno', 'kmm'], ['relatorios', 'Relatório diário', 'doc'], ['consultas', 'Consultas', 'baixar']]],
   ['Cadastros', [['frentistas', 'Frentistas', 'pessoa'], ['veiculos', 'Veículos e motoristas', 'caminhao'], ['caminhoes', 'Caminhões de diesel', 'caminhao']]],
   ['Sistema', [['acessos', 'Acessos', 'cadeado', 'admin'], ['auditoria', 'Histórico', 'historico'], ['turno', 'Horário e regras', 'turno', 'admin']]],
+  ['Desenvolvedor', [['banco', 'Banco de dados', 'grade', 'dev'], ['saude', 'Saúde do sistema', 'historico', 'dev']]],
   ['Ajuda', [['guia', 'Guia de uso', 'ajuda']]],
 ];
 const TITULO = Object.fromEntries(MENU.flatMap(([, itens]) => itens.map(i => [i[0], i[1]])));
@@ -771,6 +773,118 @@ function baixarConferencia(lote, dia, linhas) {
   XLSX.writeFile(wb, `conferencia_turno_${dia}_n${lote}.xlsx`);
 }
 
+// ---------- Desenvolvedor › Banco de dados ----------
+// Escolha a tabela, procure, toque na célula e mude. As mudanças ficam esperando até Salvar; cada uma vai para o histórico.
+// As proteções do banco continuam valendo (abastecimento não se apaga, foto registrada não muda, PIN nunca aparece).
+est.banco = { tabela: 'abastecimentos', estrutura: null, linhas: [], pend: {}, novo: null, busca: '' };
+const valorCelula = v => v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+const chaveLinha = (t, l) => JSON.stringify(Object.fromEntries(t.chave.map(k => [k, l[k]])));
+TELAS.banco = async () => {
+  if (!souDev()) return TELAS.resumo();
+  const b = est.banco;
+  if (!b.estrutura) { b.estrutura = await chamar(() => rpc('dev_estrutura')); if (!b.estrutura) return; }
+  const t = b.estrutura.find(x => x.tabela === b.tabela) || b.estrutura[0];
+  b.tabela = t.tabela;
+  const linhas = await chamar(() => consulta(supabase.from(t.tabela).select('*').order(t.chave[0], { ascending: false }).limit(300)));
+  if (!linhas) return;
+  b.linhas = linhas; b.pend = {}; b.novo = null;
+  return `${cabeca('Banco de dados', 'Toque numa célula para mudar. Nada é gravado até você tocar em Salvar; cada mudança vai para o histórico com o seu nome.',
+      `<button class="btn small ghost" type="button" data-acao="recarregar">Recarregar</button>`)}
+    <section class="painel"><div class="corpo">
+      <div class="tabs-db">${b.estrutura.map(x => `<button type="button" data-db-tabela="${esc(x.tabela)}" aria-pressed="${x.tabela === t.tabela}">${esc(x.tabela)}</button>`).join('')}</div>
+      <div class="filtros-db"><input id="db-busca" placeholder="Procurar nas linhas carregadas" value="${esc(b.busca)}" autocomplete="off">
+        <span class="hint">${linhas.length} linha(s)${linhas.length === 300 ? ' (as 300 mais recentes)' : ''} · chave: ${esc(t.chave.join(' + '))}</span>
+        <button class="btn small ghost" type="button" data-acao="db-nova">+ Nova linha</button></div>
+      <div class="aviso-db" id="db-pend" hidden></div>
+      <div class="tabela grade-db"><table><thead><tr>${t.colunas.map(c => `<th title="${esc(c.tipo)}">${esc(c.nome)}${c.editavel ? '' : ' 🔒'}</th>`).join('')}<th></th></tr></thead>
+        <tbody id="db-corpo">${linhasBanco(t, linhas)}</tbody></table></div>
+      <p class="hint">🔒 coluna calculada ou numeração automática: não muda. Campo vazio grava vazio (nulo). Listas e objetos são JSON.</p>
+    </div></section>`;
+};
+function linhasBanco(t, linhas) {
+  const q = est.banco.busca.trim().toLowerCase();
+  return linhas.filter(l => !q || JSON.stringify(l).toLowerCase().includes(q)).map(l => {
+    const k = chaveLinha(t, l);
+    return `<tr data-db-linha="${esc(k)}">${t.colunas.map(c => `<td class="${c.editavel ? 'ed' : ''}" data-db-col="${esc(c.nome)}">${esc(valorCelula(l[c.nome]))}</td>`).join('')}
+      <td><button class="btn small warn" type="button" data-acao="db-apagar" data-db-chave="${esc(k)}">Apagar</button></td></tr>`;
+  }).join('');
+}
+function mostrarPendentes() {
+  const b = est.banco, n = Object.values(b.pend).reduce((s, x) => s + Object.keys(x).length, 0) + (b.novo ? 1 : 0);
+  const el = $('db-pend'); if (!el) return;
+  el.hidden = !n;
+  el.innerHTML = n ? `${n} mudança(s) esperando. <button class="btn small" type="button" data-acao="db-salvar">Salvar</button>
+    <button class="btn small ghost" type="button" data-acao="db-desfazer">Desfazer</button>` : '';
+}
+// Texto digitado → valor para o banco: vazio é nulo; JSON para listas e objetos; sim/não para booleano
+function valorDigitado(tipo, txt) {
+  if (txt === '') return null;
+  if (tipo === 'boolean') return /^(true|sim|s|1)$/i.test(txt.trim());
+  if (/json/.test(tipo)) { try { return JSON.parse(txt); } catch { throw new Error(`O campo JSON está mal escrito: ${txt.slice(0, 40)}`); } }
+  return txt;
+}
+trabalho.addEventListener('click', e => {
+  const td = e.target.closest('td.ed[data-db-col]');
+  if (!td || td.querySelector('input')) return;
+  const tr = td.closest('tr'), atual = td.textContent;
+  td.innerHTML = `<input value="${esc(atual)}" aria-label="${esc(td.dataset.dbCol)}">`;
+  const inp = td.querySelector('input'); inp.focus(); inp.select();
+  const fim = () => {
+    const b = est.banco, novo = inp.value, k = tr.dataset.dbLinha;
+    td.textContent = novo;
+    if (k === 'novo') { b.novo[td.dataset.dbCol] = novo; }
+    else if (novo !== valorCelula(b.linhas.find(l => chaveLinha(b.estrutura.find(x => x.tabela === b.tabela), l) === k)?.[td.dataset.dbCol])) {
+      (b.pend[k] ||= {})[td.dataset.dbCol] = novo; td.classList.add('mudou');
+    }
+    mostrarPendentes();
+  };
+  inp.addEventListener('blur', fim, { once: true });
+  inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') inp.blur(); if (ev.key === 'Escape') { inp.value = atual; inp.blur(); } });
+});
+trabalho.addEventListener('input', e => {
+  if (e.target.id !== 'db-busca') return;
+  const b = est.banco; b.busca = e.target.value;
+  const t = b.estrutura.find(x => x.tabela === b.tabela);
+  $('db-corpo').innerHTML = linhasBanco(t, b.linhas);
+});
+async function salvarBanco() {
+  const b = est.banco, t = b.estrutura.find(x => x.tabela === b.tabela), tipo = Object.fromEntries(t.colunas.map(c => [c.nome, c.tipo]));
+  const converter = m => Object.fromEntries(Object.entries(m).map(([c, v]) => [c, valorDigitado(tipo[c], v)]));
+  let feitos = 0;
+  try {
+    if (b.novo) { await rpc('dev_salvar', { p_tabela: t.tabela, p_chave: null, p_valores: converter(Object.fromEntries(Object.entries(b.novo).filter(([, v]) => v !== ''))) }); feitos++; }
+    for (const [k, m] of Object.entries(b.pend)) { await rpc('dev_salvar', { p_tabela: t.tabela, p_chave: JSON.parse(k), p_valores: converter(m) }); feitos++; }
+    avisar(`${feitos} linha(s) salva(s). Ficou no histórico.`);
+  } catch (err) { avisar(`${feitos ? `${feitos} linha(s) salva(s); ` : ''}a próxima deu erro: ${err.message}`, 'warn'); }
+  abrir('banco', { semCarregando: true });
+}
+
+// ---------- Desenvolvedor › Saúde do sistema ----------
+const tamanho = b => b == null ? '—' : b > 1e9 ? `${nf(b / 1e9, 2)} GB` : `${nf(b / 1e6, 1)} MB`;
+TELAS.saude = async () => {
+  if (!souDev()) return TELAS.resumo();
+  const [s, publicada] = await Promise.all([chamar(() => rpc('dev_saude')),
+    fetch(`../atualizacao/versao.json?t=${Date.now()}`, { cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null)]);
+  if (!s) return;
+  const fila = s.comprovantes_na_fila, parado = s.fila_desde && Date.now() - new Date(s.fila_desde).getTime() > 30 * 60000;
+  const v = publicada?.version;
+  return `${cabeca('Saúde do sistema', 'Se o script do Google parou, se o espaço está acabando e se algum celular ficou numa versão antiga.',
+      '<button class="btn small ghost" type="button" data-acao="recarregar">Atualizar</button>')}
+    <section class="faixa" data-colunas="4">
+      <div class="${parado ? 'precisa' : ''}"><small>Comprovantes indo para o Drive</small><b class="num">${esc(fila)}</b><em>${fila ? `o mais antigo desde ${quandoLocal(s.fila_desde)}` : 'nenhum esperando'}</em></div>
+      <div><small>Último enviado ao Drive</small><b class="num">${s.ultimo_no_drive ? quandoLocal(s.ultimo_no_drive) : '—'}</b><em>relatórios esperando: ${esc(s.relatorios_esperando)}</em></div>
+      <div><small>Banco de dados</small><b class="num">${tamanho(s.banco_bytes)}</b><em>de 500 MB no plano grátis</em></div>
+      <div><small>Fotos no Supabase</small><b class="num">${tamanho(s.fotos_bytes)}</b><em>de 1 GB no plano grátis</em></div>
+    </section>
+    ${parado ? soComputador('Há comprovante esperando há mais de 30 minutos: o script do Google pode ter parado. Veja Execuções em script.google.com.') : ''}
+    <section class="painel"><header><h2>Versão das telas em cada celular</h2><span>publicada agora: ${v ? esc(v.slice(0, 7)) : 'não consegui ler'}</span></header>
+      <div class="tabela"><table><thead><tr><th>Conta</th><th>Versão</th><th>Última vez visto</th><th></th></tr></thead><tbody>
+      ${s.aparelhos.map(a => `<tr><td>${esc(a.nome || a.conta)}<span class="sub">${esc(a.conta)}</span></td><td class="num">${esc(String(a.versao).slice(0, 7))}</td>
+        <td>${quandoLocal(a.visto_em)}</td><td>${!v ? '' : a.versao === v ? '<span class="chip ok">em dia</span>' : '<span class="chip alerta">versão antiga: feche e abra o app</span>'}</td></tr>`).join('')
+        || '<tr><td colspan="4" class="vazio">Nenhum celular avisou a versão ainda (aparece depois que o app novo abrir).</td></tr>'}
+      </tbody></table></div></section>`;
+};
+
 // ---------- Frentistas ----------
 TELAS.frentistas = async () => {
   const lista = await carregar(() => consulta(supabase.from('frentistas').select('*').order('ativo', { ascending: false }).order('nome')), d => d.frentistas);
@@ -1044,6 +1158,7 @@ document.addEventListener('click', async e => {
   if (item) { if (suprimirClique) return; fecharMenuSeEstreito(); abrir(item.dataset.tela); return; }
   if (!trabalho.contains(e.target)) return;
   if (t('[data-ir]')) { abrir(t('[data-ir]').dataset.ir); return; }
+  if (t('[data-db-tabela]')) { est.banco.tabela = t('[data-db-tabela]').dataset.dbTabela; est.banco.busca = ''; abrir('banco'); return; }
   if (t('[data-aud-filtro]')) { est.aud.filtro = t('[data-aud-filtro]').dataset.audFiltro; mostrarAuditoria(); return; }
   if (t('[data-guia]')) { est.guia = t('[data-guia]').dataset.guia; abrir('guia', { semCarregando: true }); return; }
   const li = t('.caixa li[data-decisao]');
@@ -1075,6 +1190,20 @@ document.addEventListener('click', async e => {
     if (!confirmarDuasVezes(acao === 'confirmar' ? 'Clique de novo: lançado no KMM' : 'Clique de novo para desfazer')) return;
     const r = await agir(() => rpc('fechar_lote', { p_lote: Number(lote), p_acao: acao }));
     if (r) { avisar(acao === 'confirmar' ? `Marcado como lançado no KMM (${r.registros} abastecimento(s)).` : `Desfeito: ${r.registros} abastecimento(s) voltaram para o próximo fechamento.`); abrir('turnos', { semCarregando: true }); }
+  } else if (acao === 'db-nova') {
+    const tb = est.banco.estrutura.find(x => x.tabela === est.banco.tabela);
+    if (est.banco.novo) return;
+    est.banco.novo = {};
+    $('db-corpo').insertAdjacentHTML('afterbegin', `<tr data-db-linha="novo" class="nova">${tb.colunas.map(c => `<td class="${c.editavel ? 'ed' : ''}" data-db-col="${esc(c.nome)}"></td>`).join('')}<td><span class="hint">nova</span></td></tr>`);
+    mostrarPendentes();
+  } else if (acao === 'db-salvar') {
+    await salvarBanco();
+  } else if (acao === 'db-desfazer') {
+    abrir('banco', { semCarregando: true });
+  } else if (acao === 'db-apagar') {
+    if (!confirmarDuasVezes('Toque de novo para apagar')) return;
+    const r = await chamar(async () => { await rpc('dev_apagar', { p_tabela: est.banco.tabela, p_chave: JSON.parse(b.dataset.dbChave) }); return true; });
+    if (r) { avisar('Linha apagada. Ficou no histórico.'); abrir('banco', { semCarregando: true }); }
   } else if (acao === 'exportar-consulta') {
     if (demo()) { avisar('Modo demonstração: as planilhas usam os dados reais; saia da demonstração para baixar.', 'info'); return; }
     await chamar(() => exportarConsulta(b.dataset.tipo));

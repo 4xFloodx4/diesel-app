@@ -536,6 +536,43 @@ test('regras da conferência: o administrador ajusta e o banco passa a conferir 
   await db.exec("delete from veiculos where placa = 'XYZ9W88'");
 });
 
+test('banco de dados pelo painel: só o desenvolvedor; edita, inclui e apaga com histórico; as proteções continuam', async () => {
+  await assert.rejects(rpc(DONO, 'dev_estrutura'), /Acesso negado/);
+  await assert.rejects(rpc(CHEFE, 'dev_salvar', { p_tabela: 'veiculos', p_chave: { placa: 'ABC1D23' }, p_valores: { km_inicial: 1 } }), /Acesso negado/);
+  const est = await rpc(DEV, 'dev_estrutura');
+  const tab = Object.fromEntries(est.map(t => [t.tabela, t]));
+  assert.deepEqual(tab.abastecimentos.chave, ['id']);
+  assert.deepEqual(tab.veiculo_motoristas.chave, ['placa', 'motorista_id']);
+  assert.ok(!tab.frentistas_pin && !tab.sessoes_frentista && !tab.auditoria);
+  assert.equal(tab.abastecimentos.colunas.find(c => c.nome === 'valor_total').editavel, false);   // coluna calculada
+  // altera um abastecimento direto (vai para o histórico com o CPF mascarado)
+  const [ab] = (await db.query("select id from abastecimentos where cpf is not null order by id limit 1")).rows;
+  const depois = await rpc(DEV, 'dev_salvar', { p_tabela: 'abastecimentos', p_chave: { id: ab.id }, p_valores: { obs_supervisor: 'Ajuste feito pelo desenvolvedor' } });
+  assert.equal(depois.obs_supervisor, 'Ajuste feito pelo desenvolvedor');
+  assert.ok(!('cpf' in depois));
+  const [aud] = (await db.query("select papel, entidade_id, detalhes from auditoria where acao = 'dev.alterou' order by id desc limit 1")).rows;
+  assert.deepEqual([aud.papel, aud.entidade_id, aud.detalhes.depois.cpf.startsWith('***')], ['desenvolvedor', String(ab.id), true]);
+  await assert.rejects(rpc(DEV, 'dev_apagar', { p_tabela: 'abastecimentos', p_chave: { id: ab.id } }), /não pode ser apagado/);
+  // inclui e apaga um caminhão de diesel; tabela de fora da lista é recusada; conta de desenvolvedor continua só pelo SQL
+  await rpc(DEV, 'dev_salvar', { p_tabela: 'caminhoes_diesel', p_chave: null, p_valores: { placa_cavalo: 'dev-1a23', motorista: 'teste dev' } });
+  assert.equal((await db.query("select motorista from caminhoes_diesel where placa_cavalo = 'DEV1A23'")).rows[0].motorista, 'TESTE DEV');
+  await rpc(DEV, 'dev_apagar', { p_tabela: 'caminhoes_diesel', p_chave: { placa_cavalo: 'DEV1A23' } });
+  await assert.rejects(rpc(DEV, 'dev_salvar', { p_tabela: 'frentistas_pin', p_chave: null, p_valores: { hash: 'x' } }), /não pode ser editada/);
+  await assert.rejects(rpc(DEV, 'dev_salvar', { p_tabela: 'acessos', p_chave: { email: DEV }, p_valores: { nome: 'Eu' } }), /dono do projeto/);
+  await assert.rejects(rpc(DEV, 'dev_salvar', { p_tabela: 'abastecimentos', p_chave: { id: 999999 }, p_valores: { obs_supervisor: 'x' } }), /não encontrado/);
+});
+
+test('saúde do sistema: fila do Drive e a versão das telas em cada celular', async () => {
+  await rpc(POSTO, 'informar_versao', { p_versao: 'a1b2c3' });
+  await rpc(POSTO, 'informar_versao', { p_versao: '<script>' });   // versão estranha é ignorada
+  await assert.rejects(rpc(DONO, 'dev_saude'), /Acesso negado/);
+  const s = await rpc(DEV, 'dev_saude');
+  assert.equal(typeof s.comprovantes_na_fila, 'number');
+  assert.ok(s.banco_bytes > 0);
+  assert.deepEqual(s.aparelhos.map(a => [a.conta, a.versao]), [[POSTO, 'a1b2c3']]);
+  assert.equal((await como(DONO, 'select * from aparelhos')).length, 0);   // só o desenvolvedor lê
+});
+
 test('ninguém apaga abastecimento nem mexe na auditoria', async () => {
   await assert.rejects(db.exec('delete from abastecimentos'), /não pode ser apagado/);
   await assert.rejects(db.exec('delete from auditoria'), /somente inclusão/);
