@@ -631,7 +631,7 @@ function telaAfericao() {
       ? 'Confira o número: deve ficar perto de 20 L.' : Math.abs(dif) <= LIM.tolAfericao
       ? `Diferença de ${ml(dif)}: dentro da tolerância (até ${mL(LIM.tolAfericao)}).` : `Diferença de ${ml(dif)}: acima da tolerância. O supervisor vai receber um alerta.`}</li></ul>` : ''}
     ${fotosAfericao.length ? '' : '<p class="hint">Tire a foto da medida cheia junto com o visor da bomba.</p>'}
-    ${blocoFotos(fotosAfericao, 'afericao', 1, 3)}
+    ${blocoFotos(fotosAfericao, 'afericao', 1, 5, 'Fotos da medida cheia com o visor (até 5)')}
     ${botaoEnviar('aferir', 'Registrar aferição', pode)}
     ${historicoAfericoes()}`;
 }

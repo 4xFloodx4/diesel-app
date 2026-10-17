@@ -48,7 +48,7 @@ export const GUIA = {
       <div class="dica">Se a medida ficar mais de 20 L longe do esperado, o supervisor é avisado. Meça com calma e com o caminhão já fora da bomba. Fechou o turno sem querer? Peça ao supervisor para reabrir no painel.</div>`],
     ['medida', 'Aferição da bomba', 'Uma vez por semana em cada bomba', `<ol><li>Encha a <b>medida padrão de 20 L</b> com a bomba.</li>
       <li>Anote quanto o <b>visor</b> marcou e tire a foto da medida cheia junto com o visor.</li>
-      <li>No app, menu <b>Aferição</b>: toque na bomba, digite os litros do visor, anexe a foto e toque em <b>Registrar aferição</b>.</li>
+      <li>No app, menu <b>Aferição</b>: toque na bomba, digite os litros do visor, tire de 1 a 5 fotos (medida cheia com o visor) e toque em <b>Registrar aferição</b>.</li>
       <li><b>Devolva o diesel para o tanque.</b> Ele não conta como saída, e o app já desconta do encerrante no próximo abastecimento.</li></ol>
       <div class="dica">Diferença pequena é normal (o limite é o das regras do posto). Acima dele, o supervisor é avisado. Quando passar de 7 dias, o app lembra na tela de abastecer.</div>`],
   ],

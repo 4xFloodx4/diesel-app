@@ -478,7 +478,8 @@ alter table fotos add column if not exists drive_url text;
 alter table fotos add column if not exists no_drive_em timestamptz;
 alter table fotos add column if not exists fora_do_storage boolean not null default false;
 drop index if exists ix_fotos_fila_drive;
-create index if not exists ix_fotos_fila_drive2 on fotos (id) where entidade in ('abastecimento', 'abertura', 'fechamento') and not fora_do_storage;
+drop index if exists ix_fotos_fila_drive2;
+create index if not exists ix_fotos_fila_drive3 on fotos (id) where entidade in ('abastecimento', 'abertura', 'fechamento', 'afericao') and not fora_do_storage;
 
 create table if not exists auditoria (
   id           bigint generated always as identity primary key,
@@ -778,8 +779,8 @@ language plpgsql security definer set search_path = public as $$
 declare v_caminho text; v_n integer := 0;
 begin
   if coalesce(cardinality(p_fotos), 0) > 10 then raise exception 'No máximo 10 fotos por registro.' using errcode = '22023'; end if;
-  if p_entidade in ('abertura', 'fechamento') and coalesce(cardinality(p_fotos), 0) > 5 then
-    raise exception 'No máximo 5 fotos na abertura e no fechamento.' using errcode = '22023';
+  if p_entidade in ('abertura', 'fechamento', 'afericao') and coalesce(cardinality(p_fotos), 0) > 5 then
+    raise exception 'No máximo 5 fotos na abertura, no fechamento e na aferição.' using errcode = '22023';
   end if;
   foreach v_caminho in array coalesce(p_fotos, '{}') loop
     if not foto_valida(v_caminho, p_entidade) then raise exception 'Foto inválida: %', v_caminho using errcode = '22023'; end if;
@@ -1721,22 +1722,33 @@ end $$;
 -- Chamadas só pelo Apps Script do Google (scripts/drive-comprovantes.gs), com a chave service_role guardada nas
 -- propriedades do script. Fila: comprovante que ainda está no Storage (sem cópia no Drive, ou copiado e ainda não apagado).
 -- Comprovantes (Comprovante-PLACA-HHMM) e fotos da abertura e do fechamento do turno (Abertura-HHMM-n, Fechamento-HHMM-n),
--- todos na pasta do dia
+-- todos na pasta do dia (Abastecimentos / AAAA-MM / DD). Aferições vão para uma pasta à parte, por semana:
+-- Aferições / AAAA / Semana NN (DD-MM a DD-MM) / Bomba-N-DD-MM-HHMM-n. "pasta" diz o caminho; "raiz" qual pasta principal.
 drop function if exists fotos_para_drive(integer);
 create or replace function fotos_para_drive(p_limite integer default 25) returns jsonb
 language sql stable security definer set search_path = public as $$
   select coalesce(jsonb_agg(x order by x.id), '[]') from (
     select f.id, f.caminho, f.drive_id, f.entidade, a.id as abastecimento, a.placa,
-           to_char(a.data_hora, 'YYYY-MM-DD"T"HH24:MI:SS') as data_hora, 'Comprovante-' || a.placa || '-' || to_char(a.data_hora, 'HH24MI') as nome
+           to_char(a.data_hora, 'YYYY-MM-DD"T"HH24:MI:SS') as data_hora, 'Comprovante-' || a.placa || '-' || to_char(a.data_hora, 'HH24MI') as nome,
+           'abastecimentos' as raiz, jsonb_build_array(to_char(a.data_hora, 'YYYY-MM'), to_char(a.data_hora, 'DD')) as pasta
       from fotos f join abastecimentos a on a.id::text = f.chave
      where f.entidade = 'abastecimento' and not f.fora_do_storage
     union all
     select f.id, f.caminho, f.drive_id, f.entidade, null, null,
            f.chave || 'T' || to_char(f.criado_em at time zone 'America/Sao_Paulo', 'HH24:MI:SS'),
            initcap(f.entidade) || '-' || to_char(f.criado_em at time zone 'America/Sao_Paulo', 'HH24MI') || '-'
-             || row_number() over (partition by f.entidade, f.chave order by f.id)
+             || row_number() over (partition by f.entidade, f.chave order by f.id),
+           'abastecimentos', jsonb_build_array(left(f.chave, 7), right(f.chave, 2))
       from fotos f
      where f.entidade in ('abertura', 'fechamento') and not f.fora_do_storage and f.chave ~ '^\d{4}-\d{2}-\d{2}$'
+    union all
+    select f.id, f.caminho, f.drive_id, f.entidade, null, null, to_char(af.data_hora, 'YYYY-MM-DD"T"HH24:MI:SS'),
+           'Bomba-' || af.bomba || '-' || to_char(af.data_hora, 'DD-MM-HH24MI') || '-' || row_number() over (partition by f.chave order by f.id),
+           'afericoes', jsonb_build_array(to_char(af.data_hora, 'IYYY'),
+             'Semana ' || to_char(af.data_hora, 'IW') || ' (' || to_char(date_trunc('week', af.data_hora), 'DD-MM') || ' a '
+               || to_char(date_trunc('week', af.data_hora) + interval '6 days', 'DD-MM') || ')')
+      from fotos f join afericoes af on af.id::text = f.chave
+     where f.entidade = 'afericao' and not f.fora_do_storage
      order by 1 limit least(greatest(coalesce(p_limite, 25), 1), 100)) x
 $$;
 
@@ -1749,7 +1761,7 @@ begin
   if coalesce(p_drive_url, '') !~ '^https://drive\.google\.com/' then raise exception 'Link do Drive inválido.' using errcode = '22023'; end if;
   update fotos set drive_id = p_drive_id, drive_url = left(p_drive_url, 500), no_drive_em = coalesce(no_drive_em, now()),
          fora_do_storage = fora_do_storage or coalesce(p_fora_do_storage, false)
-   where caminho = p_caminho and entidade in ('abastecimento', 'abertura', 'fechamento');
+   where caminho = p_caminho and entidade in ('abastecimento', 'abertura', 'fechamento', 'afericao');
   if not found then raise exception 'Foto não encontrada.' using errcode = 'P0002'; end if;
 end $$;
 
@@ -1859,8 +1871,8 @@ begin
     execute $q$select coalesce(sum((metadata ->> 'size')::bigint), 0) from storage.objects where bucket_id = 'fotos'$q$ into v_fotos_bytes;
   end if;
   return jsonb_build_object(
-    'comprovantes_na_fila', (select count(*) from fotos where entidade in ('abastecimento', 'abertura', 'fechamento') and not fora_do_storage),
-    'fila_desde', (select min(criado_em) from fotos where entidade in ('abastecimento', 'abertura', 'fechamento') and not fora_do_storage),
+    'comprovantes_na_fila', (select count(*) from fotos where entidade in ('abastecimento', 'abertura', 'fechamento', 'afericao') and not fora_do_storage),
+    'fila_desde', (select min(criado_em) from fotos where entidade in ('abastecimento', 'abertura', 'fechamento', 'afericao') and not fora_do_storage),
     'ultimo_no_drive', (select max(no_drive_em) from fotos),
     'relatorios_esperando', jsonb_array_length(relatorios_para_drive()),
     'ultimo_relatorio', (select max(gerado_em) from relatorios_diarios),

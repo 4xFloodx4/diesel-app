@@ -2,7 +2,8 @@
 //
 // 1. Comprovantes: o app envia a foto do comprovante (junto com o visor da bomba) para o Storage do Supabase, que serve
 //    só de fila. O script copia cada foto para  Abastecimentos / AAAA-MM / DD / Comprovante-PLACA-HHMM.jpg (e as fotos da
-//    abertura e do fechamento do turno, Abertura-HHMM-1.jpg e Fechamento-HHMM-1.jpg, na mesma pasta do dia),
+//    abertura e do fechamento do turno, Abertura-HHMM-1.jpg e Fechamento-HHMM-1.jpg, na mesma pasta do dia; as fotos das
+//    aferições vão para a pasta à parte  Aferições / AAAA / Semana NN (DD-MM a DD-MM) / Bomba-N-DD-MM-HHMM-1.jpg),
 //    grava no banco o link do Drive (o painel abre a foto por ele) e apaga a foto do Supabase, que assim não enche.
 // 2. Relatório diário: depois que o frentista fecha o turno, preenche uma cópia do modelo
 //    "RELATÓRIO DIÁRIO DE ABASTECIMENTO - VERSÃO ONLINE" e salva o PDF em  Abastecimentos / AAAA-MM / DD /
@@ -20,6 +21,7 @@
 //  3. Escolha a função "instalar" e clique em Executar (autorize o acesso ao Drive, às planilhas e à internet).
 
 const PASTA_RAIZ = 'Abastecimentos';
+const PASTA_AFERICOES = 'Aferições';   // pasta à parte: Aferições / AAAA / Semana NN (DD-MM a DD-MM) / fotos
 const POR_VEZ = 40;                       // fotos por execução (25 abastecimentos por dia cabem com folga)
 const LIMITE_MS = 4.5 * 60 * 1000;        // o Google corta a execução em 6 minutos
 
@@ -152,7 +154,9 @@ function levar_(cfg, raiz, f) {
   if (!id) {
     const p = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(f.data_hora);
     if (!p) throw new Error(`data inválida: ${f.data_hora}`);
-    const pasta = subpasta_(subpasta_(raiz, `${p[1]}-${p[2]}`), p[3]);
+    // O banco diz o caminho (f.pasta); sem ele (banco antigo), a pasta do dia em Abastecimentos
+    const base = f.raiz === 'afericoes' ? pastaAfericoes_(cfg) : raiz;
+    const pasta = (f.pasta || [`${p[1]}-${p[2]}`, p[3]]).reduce((pai, nome) => subpasta_(pai, nome), base);
     // Já copiado numa execução que caiu antes de gravar no banco: usa o mesmo arquivo (a descrição guarda o caminho)
     // nome vem do banco: Comprovante-PLACA-HHMM, Abertura-HHMM-n ou Fechamento-HHMM-n
     const arquivo = jaCopiado_(pasta, f.caminho) || criar_(cfg, pasta, f, f.nome || `Comprovante-${f.placa}-${p[4]}${p[5]}`);
@@ -169,7 +173,7 @@ function criar_(cfg, pasta, f, base) {
   let nome = `${base}.jpg`;
   for (let n = 2; pasta.getFilesByName(nome).hasNext(); n++) nome = `${base}-${n}.jpg`;   // mesmo caminhão duas vezes no mesmo minuto
   const arquivo = pasta.createFile(r.getBlob().setName(nome));
-  arquivo.setDescription(`${f.abastecimento ? `Abastecimento #${f.abastecimento}` : `Turno (${f.entidade})`} · ${f.caminho}`);
+  arquivo.setDescription(`${f.abastecimento ? `Abastecimento #${f.abastecimento}` : f.entidade === 'afericao' ? 'Aferição' : `Turno (${f.entidade})`} · ${f.caminho}`);
   return arquivo;
 }
 
@@ -208,6 +212,16 @@ function pastaRaiz_(cfg) {
   if (cfg.pasta) return DriveApp.getFolderById(cfg.pasta);
   const pasta = subpasta_(DriveApp.getRootFolder(), PASTA_RAIZ);
   PropertiesService.getScriptProperties().setProperty('PASTA_ID', pasta.getId());   // da próxima vez vai direto
+  return pasta;
+}
+
+// Aferições: ao lado da pasta Abastecimentos (mesma pasta-mãe); o ID fica guardado para as próximas vezes
+function pastaAfericoes_(cfg) {
+  const props = PropertiesService.getScriptProperties(), id = String(props.getProperty('PASTA_AFERICOES_ID') || '').trim();
+  if (id) return DriveApp.getFolderById(id);
+  const maes = pastaRaiz_(cfg).getParents();
+  const pasta = subpasta_(maes.hasNext() ? maes.next() : DriveApp.getRootFolder(), PASTA_AFERICOES);
+  props.setProperty('PASTA_AFERICOES_ID', pasta.getId());
   return pasta;
 }
 

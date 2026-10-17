@@ -120,7 +120,16 @@ Abastecimentos/
   2026-10/
     16/
       Comprovante-ABC1D23-1432.jpg
+      Abertura-0458-1.jpg
+      Fechamento-2305-1.jpg
+Aferições/
+  2026/
+    Semana 42 (12-10 a 18-10)/
+      Bomba-1-16-10-0712-1.jpg
+      Bomba-1-16-10-0712-2.jpg
 ```
+
+A pasta **Aferições** fica ao lado de **Abastecimentos** (na mesma pasta-mãe) e é criada sozinha. Cada semana vai de segunda a domingo; cada aferição leva de 1 a 5 fotos.
 
 O arquivo tem a placa e a hora do abastecimento. O mesmo caminhão duas vezes no mesmo minuto vira `-2`. O painel abre a foto pelo link do Drive, no botão **Ver** da lista de abastecimentos e em **Ver comprovante** nas decisões.
 
@@ -137,7 +146,7 @@ Espaço: com cerca de 25 abastecimentos por dia, dá uns 250 MB por mês. Os 15 
 5. Volte ao **Editor**, escolha a função **instalar** no alto e clique em **Executar**. Na primeira vez o Google pede autorização: escolha a conta, **Avançado** → **Acessar (não seguro)** → **Permitir**. O aviso aparece porque o script é seu e não foi publicado; ele só mexe no seu Drive e fala com o seu Supabase.
 6. Em **Execuções** deve aparecer "Ligação com o Supabase OK". Pronto: o gatilho de 10 em 10 minutos ficou criado (em **Acionadores**).
 
-**Ver as fotos pelo painel:** compartilhe a pasta **Abastecimentos** no Drive com a conta Google de cada supervisor, como **Leitor**. Quem não tem acesso vê o botão **Abrir no Google Drive**, mas o Drive pede permissão.
+**Ver as fotos pelo painel:** compartilhe as pastas **Abastecimentos** e **Aferições** no Drive com a conta Google de cada supervisor, como **Leitor**. Quem não tem acesso vê o botão **Abrir no Google Drive**, mas o Drive pede permissão.
 
 **Se algo falhar:** o Google manda um e-mail quando uma execução dá erro. As fotos que não foram ficam no Supabase e vão na próxima rodada, então nada se perde. Se o script ficar parado, as fotos se acumulam no Supabase (1 GB grátis, uns 3 meses), por isso confira **Execuções** de vez em quando.
 

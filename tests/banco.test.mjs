@@ -237,6 +237,14 @@ test('aferição semanal: bomba, visor na medida de 20 L e foto; o encerrante an
   assert.equal(b2.status, 'Pronto', JSON.stringify(b2.problemas));
   assert.equal((await rpc(CHEFE, 'fotos_de', { p_entidade: 'afericao', p_chave: String(a.id) })).length, 1);
   assert.equal((await como(POSTO, 'select * from afericoes')).length, 0);   // celular não lê a tabela direto
+  await assert.rejects(aferir(dados(), Array.from({ length: 6 }, () => foto('afericao'))), /No máximo 5 fotos/);
+  // no Drive: pasta à parte, por semana (Aferições / AAAA / Semana NN (seg a dom))
+  const [q] = (await comoServico('select fotos_para_drive(100) as r'))[0].r.filter(x => x.entidade === 'afericao' && x.caminho.includes(''));
+  const [semana] = (await db.query(`select to_char($1::timestamp, 'IYYY') as ano, 'Semana ' || to_char($1::timestamp, 'IW') || ' (' ||
+    to_char(date_trunc('week', $1::timestamp), 'DD-MM') || ' a ' || to_char(date_trunc('week', $1::timestamp) + interval '6 days', 'DD-MM') || ')' as s`, [d.data_hora])).rows;
+  assert.equal(q.raiz, 'afericoes');
+  assert.match(q.nome, /^Bomba-\d-\d{2}-\d{2}-\d{4}-1$/);
+  assert.ok((await comoServico('select fotos_para_drive(100) as r'))[0].r.some(x => x.entidade === 'afericao' && x.pasta[0] === semana.ano && x.pasta[1] === semana.s));
 });
 
 test('placa puxa os motoristas vinculados: o lançamento cria o vínculo sozinho', async () => {
@@ -380,9 +388,11 @@ test('todo abastecimento exige uma foto do comprovante com o visor da bomba', as
 test('comprovantes vão para o Google Drive: só o Apps Script (service_role) lê a fila e marca o que foi copiado', async () => {
   await assert.rejects(como(POSTO, 'select fotos_para_drive(10)'), /permission denied/);
   await assert.rejects(como(CHEFE, "select foto_no_drive('x', 'y', 'z', true)"), /permission denied/);
-  const fila = (await comoServico('select fotos_para_drive(100) as r'))[0].r;
+  const todas = (await comoServico('select fotos_para_drive(100) as r'))[0].r;
+  assert.ok(todas.every(x => x.entidade === 'afericao' ? x.raiz === 'afericoes' : x.raiz === 'abastecimentos'));   // aferição: pasta à parte
+  const fila = todas.filter(x => x.entidade === 'abastecimento');
   assert.ok(fila.length >= 1);
-  assert.ok(fila.every(x => /^abastecimento\//.test(x.caminho) && /^[A-Z]{3}\d/.test(x.placa) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(x.data_hora)));
+  assert.ok(fila.every(x => /^abastecimento\//.test(x.caminho) && x.nome.startsWith(`Comprovante-${x.placa}-`) && /^[A-Z]{3}\d/.test(x.placa) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(x.data_hora)));
   const [x] = fila;
   const marcar = (id, url, fora) => comoServico('select foto_no_drive($1, $2, $3, $4)', [x.caminho, id, url, fora]);
   await assert.rejects(marcar('../x', 'https://drive.google.com/file/d/abc/view', false), /ID do Drive inválido/);
