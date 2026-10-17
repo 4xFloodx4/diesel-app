@@ -28,11 +28,14 @@ export const GUIA = {
       <li>Responda se o diesel foi <b>descontado do motorista</b>.</li><li>Toque em <b>Enviar abastecimento</b> e espere a mensagem de lançado.</li></ol>
       <div class="dica">Preencheu errado? <b>Limpar</b>, no alto do formulário, apaga tudo menos a bomba e a hora (ele pede confirmação).
       Ficou vermelho? Confira os números de novo antes de enviar. Se o app disser que o encerrante bate com a outra bomba, você marcou a bomba errada: toque em <b>Usar a bomba</b>. Se estiverem certos mesmo, escreva o que aconteceu: o lançamento vai para o supervisor conferir.</div>`],
-    ['alerta', 'Diesel sem desconto do motorista', 'Precisa de autorização', `<ol><li>Marque <b>Não</b> em "O diesel foi descontado do motorista?".</li>
-      <li>Explique por que não foi descontado (ex.: motorista agregado com acerto no fim do mês).</li><li>Toque em <b>Pedir autorização ao supervisor</b>.</li></ol>
-      <div class="dica">O abastecimento fica parado em "Aguardando autorização" até o supervisor decidir. Você acompanha em <b>Turno de hoje</b>, no menu.</div>`],
-    ['relogio', 'Fora do horário do turno', 'Das {FECHAMENTO} às {ABERTURA}', `<p>O turno vai das <b>{ABERTURA} às {FECHAMENTO}</b>. Lançamento fora desse horário só entra com justificativa e autorização do supervisor ou do administrador.</p>
-      <div class="atencao"><b>Depois do fechamento do turno</b>, não dá para lançar mais nada com a data daquele dia.</div>`],
+    ['alerta', 'Diesel sem desconto do motorista', 'Vira alerta para o supervisor', `<ol><li>Marque <b>Não</b> em "O diesel foi descontado do motorista?".</li>
+      <li>Explique por que não foi descontado (ex.: motorista agregado com acerto no fim do mês).</li><li>Toque em <b>Enviar abastecimento</b>.</li></ol>
+      <div class="dica">O lançamento segue normal e vai para o KMM. O supervisor vê o alerta com a sua justificativa.</div>`],
+    ['relogio', 'Horário do turno e fechamento', 'Das {ABERTURA} às {FECHAMENTO}', `<p>O turno vai das <b>{ABERTURA} às {FECHAMENTO}</b>. <b>Fora desse horário o app não aceita abastecimento.</b>
+      Lance logo depois de abastecer: a hora não pode ser de muito tempo atrás.</p>
+      <p>Feche o turno logo depois do fim (o app avisa o prazo). <b>Se o turno ficou aberto, o posto não abre no dia seguinte:</b> o frentista da manhã mede a régua
+      <b>antes de abastecer</b> e fecha o turno da noite (no app aparece o botão para isso). O supervisor vê que o fechamento foi feito depois do prazo e por quem.</p>
+      <div class="atencao"><b>Depois do fechamento do turno</b>, não dá para lançar mais nada com a data daquele dia. No menu <b>Turno de hoje</b> dá para baixar a folha do turno em PDF.</div>`],
     ['caminhao', 'Placa ou motorista que não está na lista', 'Cadastro pelo app', `<ol><li>Se a busca não achar, toque em <b>+ Cadastrar</b>: o cadastro já vem com o que você digitou.</li>
       <li>Veículo: digite a placa e o KM (o tanque já vem com 1100 L; mude se for diferente) e <b>tire uma foto do caminhão mostrando a placa</b>.</li>
       <li>Motorista: nome completo e CPF (o KMM exige o CPF).</li>
@@ -50,10 +53,11 @@ export const GUIA = {
       <div class="dica">Diferença pequena é normal (o limite é o das regras do posto). Acima dele, o supervisor é avisado. Quando passar de 7 dias, o app lembra na tela de abastecer.</div>`],
   ],
   supervisor: [
-    ['lista', 'Decisões do dia', 'Autorizações e exceções', `<p>Tudo o que precisa de você aparece em <b>Decisões</b>, com a cor do tipo:</p>
-      <ol><li><b>Sem desconto</b> (azul): o frentista lançou sem descontar do motorista. Autorize se houver motivo; recuse para cancelar.</li>
-      <li><b>Fora do horário</b> (roxo): lançado entre {FECHAMENTO} e {ABERTURA}. Confira se o abastecimento aconteceu mesmo.</li>
-      <li><b>Exceção</b> (vermelho): algum número não bateu. Corrija o que estiver errado e confira de novo, ou aprove com o motivo.</li></ol>
+    ['lista', 'Decisões do dia', 'Exceções e alertas', `<p>Tudo o que precisa de você aparece em <b>Decisões</b>:</p>
+      <ol><li><b>Exceção</b> (vermelho): algum número não bateu. Corrija o que estiver errado e confira de novo, ou aprove com o motivo.</li>
+      <li><b>Alertas para conferir</b>: abastecimento <b>sem desconto</b> do motorista (com a justificativa do frentista) e turno <b>fechado com atraso</b> ou
+      <b>sem medição</b>. Não travam nada: confira e toque em <b>Visto</b>.</li></ol>
+      <div class="dica">Turno que ficou aberto aparece em <b>Exportar › Fechamento do turno</b>. Com um só, o frentista da manhã fecha no app; com mais de um, feche os antigos ali, sem medição.</div>
       <div class="atencao"><b>Toda decisão pede um motivo</b> e fica na auditoria com o seu nome.</div>`],
     ['kmm', 'Fechamento do turno no KMM', 'Com o administrador (analista)', `<ol><li>Depois que o frentista fecha o turno, o cartão do dia aparece em <b>Exportar › Fechamento do turno</b>.</li>
       <li>O administrador toca em <b>Gerar planilha do KMM</b> (no computador). A planilha baixa sozinha; a <b>Lista para conferência</b> e o <b>Relatório diário (PDF)</b> ficam no mesmo cartão.</li>

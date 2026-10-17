@@ -6,6 +6,7 @@ import { supabase, rpc, consulta, contaAtual, entrarComGoogle, sair, nativo, aoV
 import { esc, nf, parseNum, dataBR, dataHora, hojeISO, classeStatus, ler, gravar } from '../comum/util.js';
 import { planilhaKMM, avisosLote } from '../comum/kmm.js';
 import { tirarFoto, enviarFotos, linksDasFotos } from '../comum/fotos.js';
+import { montarFolha, salvarPdf, nomeFolha } from '../comum/folha.js';
 import { aplicarTema, definirTema, htmlTema, demoLigado, alternarDemo, htmlChaveDemo, htmlFaixaDemo, protegerContraMoldura } from '../comum/tema.js';
 import { htmlGuia, htmlAbasGuia } from '../comum/guia.js';
 import { htmlAuditoria, htmlFiltroAud, descrever } from '../comum/auditoria.js';
@@ -162,7 +163,12 @@ async function atualizarContadores() {
     : Promise.all([...STATUS_DECISAO, 'Pronto'].map(s => supabase.from('abastecimentos').select('id', { count: 'exact', head: true }).eq('status', s)))
       .then(rs => Object.fromEntries(rs.map((x, i) => [[...STATUS_DECISAO, 'Pronto'][i], x.count || 0]))).catch(() => null));
   if (!r) return;
-  const dec = STATUS_DECISAO.reduce((s, k) => s + (r[k] || 0), 0);
+  // alertas sem Visto (sem desconto; turno fechado com atraso ou sem medição) também contam em Decisões
+  const [sd, fa] = demo() ? [{ count: 0 }, { data: [] }] : await Promise.all([
+    supabase.from('abastecimentos').select('id', { count: 'exact', head: true }).eq('desconto_confirmado', false).is('alerta_visto_em', null).neq('status', 'Cancelado'),
+    supabase.from('fechamentos').select('data').or('atrasado.eq.true,sem_medicao.eq.true').is('alerta_visto_em', null).limit(500),
+  ]).catch(() => [{ count: 0 }, { data: [] }]);
+  const dec = STATUS_DECISAO.reduce((s, k) => s + (r[k] || 0), 0) + (sd.count || 0) + new Set((fa.data || []).map(f => f.data)).size;
   const marcar = (id, n, vermelho) => { const el = document.querySelector(`[data-qtd="${id}"]`); if (!el) return; el.hidden = !n; el.textContent = n; el.classList.toggle('vermelho', !!vermelho); };
   marcar('decisoes', dec, true); marcar('turnos', r.Pronto || 0);
   $('badge-menu').hidden = !dec; $('badge-menu').textContent = dec;
@@ -335,18 +341,49 @@ async function carregarCadastros() {
 }
 const cadDemo = d => ({ veiculos: d.veiculos, motoristas: d.motoristas, bombas: d.bombas, tanques: d.tanques, frentistas: d.frentistas });
 
+// Alertas para conferir (não travam nada): abastecimento sem desconto do motorista, com a justificativa do frentista, e
+// turno fechado com atraso (por outro frentista) ou sem medição. Quem confere toca em Visto.
+async function carregarAlertas() {
+  const [semDesconto, fech] = await Promise.all([
+    consulta(supabase.from('abastecimentos').select('id, data_hora, placa, motorista, litros, bomba, justificativa_desconto, frentistas(nome)')
+      .eq('desconto_confirmado', false).is('alerta_visto_em', null).neq('status', 'Cancelado').order('data_hora').limit(300)),
+    consulta(supabase.from('fechamentos').select('data, atrasado, sem_medicao, motivo, criado_em, conta, frentistas(nome)')
+      .or('atrasado.eq.true,sem_medicao.eq.true').is('alerta_visto_em', null).order('data').limit(300)),
+  ]);
+  const dias = [...new Map(fech.map(f => [f.data, f])).values()];
+  return { semDesconto, dias };
+}
+function alertasHtml(a) {
+  const itens = [
+    ...a.dias.map(f => `<li class="alerta-item"><span class="tarja hora"></span><div><div class="linha1"><b>Turno de ${esc(diaSemana(f.data))}</b>
+        <span class="chip hora">${f.sem_medicao ? 'Fechado sem medição' : 'Fechado com atraso'}</span></div>
+        <p>${f.sem_medicao ? `Fechado pelo painel (${esc(nomeCurto(f.conta))}): ${esc(f.motivo || '')}` : `O turno não foi fechado no prazo. Quem fechou foi <b>${esc(f.frentistas?.nome || '')}</b>, em ${quandoLocal(f.criado_em)}.`}</p></div>
+        <button class="btn small ghost" type="button" data-acao="visto" data-tipo="fechamento" data-chave="${esc(f.data)}">Visto</button></li>`),
+    ...a.semDesconto.map(r => `<li class="alerta-item"><span class="tarja pend"></span><div><div class="linha1">${placa(r.placa)}<span class="chip pend">Sem desconto</span>
+        <span class="meta">${esc(r.motorista)} · ${nf(r.litros)} L · ${dataHora(r.data_hora)} · ${esc(r.frentistas?.nome || '')}</span></div>
+        <p><q>${esc(r.justificativa_desconto || '')}</q></p></div>
+        <button class="btn small ghost" type="button" data-acao="visto" data-tipo="desconto" data-chave="${esc(r.id)}">Visto</button></li>`),
+  ];
+  return itens.length ? `<ul class="caixa alertas">${itens.join('')}</ul>` : '<p class="vazio">Nenhum alerta para conferir.</p>';
+}
+
 TELAS.decisoes = async () => {
   const r = await carregar(async () => ({
     lista: await consulta(supabase.from('abastecimentos').select('*, frentistas(nome)').in('status', STATUS_DECISAO).order('data_hora').limit(300)),
     cad: await carregarCadastros(),
-  }), d => ({ lista: d.abastecimentos.filter(a => STATUS_DECISAO.includes(a.status)).reverse(), cad: cadDemo(d) }));
+    alertas: await carregarAlertas(),
+  }), d => ({ lista: d.abastecimentos.filter(a => STATUS_DECISAO.includes(a.status)).reverse(), cad: cadDemo(d),
+    alertas: { semDesconto: d.abastecimentos.filter(a => !a.desconto_confirmado), dias: [] } }));
   if (!r) return;
   est.cad = r.cad;
   // Autorizações primeiro (o frentista pode estar esperando), depois exceções, do mais antigo para o mais novo
   const lista = [...r.lista.filter(a => a.status === 'Aguardando autorização'), ...r.lista.filter(a => a.status !== 'Aguardando autorização')];
   if (!lista.some(a => a.id === est.sel)) est.sel = lista[0]?.id ?? null;
   const sel = lista.find(a => a.id === est.sel);
-  return `${cabeca('Decisões', 'Autorizações (sem desconto ou fora do horário) e exceções das conferências. Toda decisão pede um motivo e fica na auditoria.')}
+  const nAlertas = r.alertas.semDesconto.length + r.alertas.dias.length;
+  return `${cabeca('Decisões', 'Exceções das conferências (toda decisão pede um motivo e fica no histórico) e alertas para conferir.')}
+    <section class="painel"><header><h2>Alertas para conferir</h2><span>${nAlertas ? `${nAlertas} alerta(s) · não travam nada; toque em Visto depois de conferir` : 'em dia'}</span></header>
+      ${alertasHtml(r.alertas)}</section>
     <div class="dividido">
       <section class="painel"><header><h2>Fila</h2><span>${lista.length} pendente(s)</span></header>${caixaHtml(lista, est.sel)}</section>
       ${sel ? `<section class="painel" id="detalhe-decisao">${detalheDecisao(sel)}</section>` : ''}
@@ -623,7 +660,8 @@ function cartaoTurno(t, emLote) {
   const rel = t.relatorio, pode = souAdmin() && !nativo;
   const passo = (feito, agora, txt) => `<div class="${feito ? 'feito' : agora ? 'agora' : ''}">${feito ? '✓ ' : ''}${txt}</div>`;
   const vaiJunto = t.prontos + t.prontos_de_antes;
-  return `<section class="painel turno-card"><header><h2>${esc(diaSemana(t.dia))}</h2><span class="chip ${classe}">${texto}</span></header>
+  return `<section class="painel turno-card"><header><h2>${esc(diaSemana(t.dia))}</h2><span class="acoes">${t.sem_medicao ? '<span class="chip hora">sem medição</span>'
+      : t.atrasado ? '<span class="chip hora">fechado com atraso</span>' : ''}<span class="chip ${classe}">${texto}</span></span></header>
     <div class="corpo">
       <div class="passos">${passo(true, false, `Turno fechado ${quandoLocal(t.fechado_em).slice(6)}${t.fechado_por ? ` · ${esc(t.fechado_por)}` : ''}`)}
         ${passo(rel?.atualizado, false, rel ? (rel.atualizado ? 'Relatório no Drive' : 'Relatório sendo refeito') : 'Relatório sendo gerado')}
@@ -637,7 +675,8 @@ function cartaoTurno(t, emLote) {
         ${pode && vaiJunto && !gerados.length ? `<button class="btn small" type="button" data-acao="gerar" data-dia="${esc(t.dia)}">Gerar planilha do KMM (${vaiJunto})</button>` : ''}
         ${[...gerados, ...confirmados].map(l => `<button class="btn small ghost" type="button" data-acao="baixar" data-lote="${esc(l.id)}" data-dia="${esc(t.dia)}">Planilha do KMM${t.lotes.length > 1 ? ` nº ${esc(l.id)}` : ''}</button>
           <button class="btn small ghost" type="button" data-acao="conferencia" data-lote="${esc(l.id)}" data-dia="${esc(t.dia)}">Lista para conferência</button>`).join('')}
-        ${rel ? `<a class="btn small ghost" href="${esc(rel.drive_url)}" target="_blank" rel="noopener noreferrer">Relatório diário (PDF)</a>` : ''}
+        <button class="btn small ghost" type="button" data-acao="folha" data-dia="${esc(t.dia)}">Folha do turno (PDF)</button>
+        ${rel ? `<a class="btn small ghost" href="${esc(rel.drive_url)}" target="_blank" rel="noopener noreferrer">Cópia no Drive</a>` : ''}
         ${pode ? gerados.map(l => `<button class="btn small" type="button" data-acao="confirmar" data-lote="${esc(l.id)}">Marcar como lançado no KMM</button>
           <button class="btn small ghost" type="button" data-acao="desfazer" data-lote="${esc(l.id)}">Desfazer (não lancei)</button>`).join('') : ''}
         ${pode ? confirmados.map(l => `<button class="btn small ghost" type="button" data-acao="desfazer" data-lote="${esc(l.id)}">Desfazer lançamento nº ${esc(l.id)}</button>`).join('') : ''}
@@ -654,15 +693,32 @@ function cartaoTurno(t, emLote) {
 const turnosDemo = d => d.fechamentos.map(f => ({ dia: f.data, fechado_em: `${f.data}T23:02:00`, fechado_por: f.frentistas?.nome, abastecimentos: 24, litros: 9870, pendentes: 0,
   prontos: 0, prontos_de_antes: 0, chegadas: 0, relatorio: null, lotes: d.lotes.filter(l => l.situacao === 'Confirmado').map(l => ({ ...l, fechado_por: 'Administrador (demo)' })) }));
 
+// Dias que ficaram sem fechamento: o posto não abre até alguém fechar. Com um só, o frentista da manhã fecha no app;
+// com mais de um, o supervisor fecha os antigos aqui, sem medição (a régua fica igual ao esperado).
+function blocoSemFechamento(dias) {
+  if (!dias?.length) return '';
+  return `<section class="painel aviso-turno"><header><h2>${dias.length === 1 ? 'Turno sem fechamento' : `${dias.length} turnos sem fechamento`}</h2>
+      <span>o posto não abre até fechar</span></header><div class="corpo">
+      <p>${dias.length === 1 ? `O frentista da manhã mede a régua e fecha o turno de <b>${esc(diaSemana(dias[0]))}</b> no app, antes de abastecer.`
+        : `O app só deixa o frentista fechar o último (${esc(diaSemana(dias[dias.length - 1]))}). Feche aqui os mais antigos, do primeiro para o último.`}
+        Se não der para medir (régua quebrada, por exemplo), feche aqui sem medição: a régua fica igual ao esperado e a diferença real aparece no próximo fechamento medido.</p>
+      <form class="formulario" data-sem-medicao="${esc(dias[0])}">
+        <div class="field"><label class="lbl" for="sm-motivo">Motivo para fechar o turno de ${esc(dataBR(dias[0]).slice(0, 5))} sem medição</label>
+          <input id="sm-motivo" name="motivo" required minlength="5" maxlength="500" placeholder="Ex.: frentista esqueceu dois dias seguidos"></div>
+        <button class="btn small warn" type="submit">Fechar ${esc(dataBR(dias[0]).slice(0, 5))} sem medição</button></form></div></section>`;
+}
+
 TELAS.turnos = async () => {
   const r = await carregar(async () => ({
     ts: await rpc('turnos_kmm', { p_limite: 30 }),
     emLote: await consulta(supabase.from('abastecimentos').select('id, data_hora, placa, motorista, litros, lote_id').eq('status', 'Em lote').order('data_hora')),
-  }), d => ({ ts: turnosDemo(d), emLote: [] }));
+    pendentes: await rpc('dias_sem_fechamento'),
+  }), d => ({ ts: turnosDemo(d), emLote: [], pendentes: [] }));
   if (!r) return;
   return `${cabeca('Fechamento do turno', 'Cada turno fechado no app vira uma planilha no modelo do importador do KMM (Importação de abastecimento › Interno) e um relatório diário em PDF.')}
     ${nativo ? soComputador('No celular é só consulta. Gerar a planilha, baixar e marcar como lançado é feito no computador.') : ''}
     ${!souAdmin() && !nativo ? soComputador('Você baixa a planilha e o relatório. Gerar a planilha e marcar como lançado no KMM é com o administrador.') : ''}
+    ${blocoSemFechamento(r.pendentes)}
     ${r.ts.length ? r.ts.map(t => cartaoTurno(t, r.emLote)).join('') : '<div class="sem-dados"><b>Nenhum turno fechado ainda</b>O cartão do turno aparece aqui quando o frentista toca em Fechar turno no app.</div>'}`;
 };
 
@@ -674,10 +730,12 @@ TELAS.relatorios = async () => {
     <section class="painel"><div class="tabela"><table><thead><tr><th>Dia</th><th>Turno fechado</th><th class="n">Abastecimentos</th><th class="n">Chegadas</th><th>Relatório</th></tr></thead><tbody>
     ${ts.map(t => `<tr><td>${esc(diaSemana(t.dia))}</td><td>${quandoLocal(t.fechado_em)}${t.fechado_por ? `<span class="sub">${esc(t.fechado_por)}</span>` : ''}</td>
       <td class="n">${esc(t.abastecimentos)}</td><td class="n">${esc(t.chegadas)}</td>
-      <td>${t.relatorio ? `<a class="lk" href="${esc(t.relatorio.drive_url)}" target="_blank" rel="noopener noreferrer">Abrir PDF</a>${t.relatorio.atualizado ? '' : '<span class="sub">turno reaberto: o PDF vai ser refeito</span>'}`
-        : '<span class="hint">Sendo gerado (até 10 minutos depois do fechamento)</span>'}</td></tr>`).join('') || '<tr><td colspan="5" class="vazio">Nenhum turno fechado ainda.</td></tr>'}
+      <td><div class="acoes"><button class="btn small ghost" type="button" data-acao="folha" data-dia="${esc(t.dia)}">Baixar folha (PDF)</button>
+        ${t.relatorio ? `<a class="lk" href="${esc(t.relatorio.drive_url)}" target="_blank" rel="noopener noreferrer">cópia no Drive</a>` : ''}</div></td></tr>`).join('')
+        || '<tr><td colspan="5" class="vazio">Nenhum turno fechado ainda.</td></tr>'}
     </tbody></table></div></section>
-    <p class="hint">O PDF fica no Drive em Abastecimentos › mês › dia, junto com os comprovantes. Para imprimir, abra o PDF e imprima; a assinatura fica em branco para o carimbo do analista.</p>`;
+    <p class="hint">A folha é montada na hora, no modelo da Ritmo, com o que está no sistema; a assinatura fica em branco para o carimbo do analista.
+      Se o script do Google estiver configurado, uma cópia fica no Drive em Abastecimentos › mês › dia.</p>`;
 };
 
 // ---------- Exportar › Consultas (Excel com detalhes) ----------
@@ -1077,7 +1135,7 @@ TELAS.guia = async () => `${cabeca('Guia de uso', 'Como usar o app e o painel, e
 TELAS.turno = async () => {
   if (!souAdmin()) return TELAS.resumo();
   const t = est.turno;
-  return `${cabeca('Horário e regras', 'O horário do turno e as regras que a conferência usa no app e no banco.')}
+  return `${cabeca('Horário e regras', 'Fora do horário do turno o app não aceita abastecimento. As regras valem para o app e para o banco.')}
     <section class="painel estreito-560"><header><h2>Turno do posto</h2><span>vale para todos os celulares</span></header><div class="corpo">
       <form class="formulario" data-turno>
         ${campo('Abertura', 'abertura', `type="time" required value="${esc(t.abertura)}"`)}
@@ -1099,6 +1157,10 @@ function blocoRegras() {
         ${num('Diferença da régua aceita (L)', 'tol_regua', nf(g.tol_regua ?? 20, 1))}
         ${num('Tolerância da aferição (mL)', 'tol_afericao', nf((g.tol_afericao ?? 0.1) * 1000, 0))}
         ${num('Tanque padrão do caminhão novo (L)', 'tanque_padrao', nf(g.tanque_padrao ?? 1100, 0))}
+        ${num('Lançar até quantos minutos depois de abastecer', 'atraso_lancamento_min', g.atraso_lancamento_min ?? 30)}
+        ${num('Prazo para fechar o turno depois do fim (min)', 'prazo_fechamento_min', g.prazo_fechamento_min ?? 30)}
+        ${rotulo('Posto só abre com o turno anterior fechado', `<select name="exigir_fechamento"><option value="true" ${g.exigir_fechamento !== false ? 'selected' : ''}>Sim</option>
+          <option value="false" ${g.exigir_fechamento === false ? 'selected' : ''}>Não</option></select>`)}
         <button class="btn small" type="submit">Salvar regras</button></form>
       <p class="hint">Salto de KM: rodou mais que isso desde o último abastecimento, vai para conferência. Folga do encerrante: quanto os litros do visor podem
         diferir do encerrante. Folga da capacidade: quanto acima do tanque do caminhão ainda é aceito. Régua: diferença aceita no fechamento e na chegada.
@@ -1113,6 +1175,13 @@ trabalho.addEventListener('submit', async e => {
   const d = Object.fromEntries(new FormData(f));
 
   if (f.dataset.decidir) return decidir(f, e.submitter?.dataset.decisao || 'revalidar');
+  if (f.dataset.semMedicao) {
+    const botao = f.querySelector('button[type="submit"]');
+    if (f.dataset.confirmando !== '1') { f.dataset.confirmando = '1'; botao.textContent = 'Clique de novo para fechar sem medição'; return; }
+    const r = await agir(() => rpc('fechar_sem_medicao', { p_dia: f.dataset.semMedicao, p_motivo: (d.motivo || '').trim() }));
+    if (r) { avisar(`Turno de ${dataBR(r.data).slice(0, 5)} fechado sem medição.`); abrir(est.tela, { semCarregando: true }); }
+    return;
+  }
   if (f.dataset.reabrir) {
     if ((d.motivo || '').trim().length < 5) { avisar('Escreva o motivo para reabrir o turno.', 'warn'); return; }
     const botao = f.querySelector('button[type="submit"]');
@@ -1125,9 +1194,10 @@ trabalho.addEventListener('submit', async e => {
   if (f.hasAttribute('data-regras')) {
     const v = k => parseNum(d[k]);
     const regras = { km_salto: Math.round(v('km_salto')), tol_encerrante: v('tol_encerrante'), tol_capacidade: Math.round((1 + v('tol_capacidade') / 100) * 100) / 100,
-      tol_regua: v('tol_regua'), tol_afericao: v('tol_afericao') / 1000, tanque_padrao: v('tanque_padrao') };
+      tol_regua: v('tol_regua'), tol_afericao: v('tol_afericao') / 1000, tanque_padrao: v('tanque_padrao'),
+      atraso_lancamento_min: Math.round(v('atraso_lancamento_min')), prazo_fechamento_min: Math.round(v('prazo_fechamento_min')) };
     if (Object.values(regras).some(x => Number.isNaN(x))) { avisar('Confira os números das regras.', 'warn'); return; }
-    const r = await agir(() => consulta(supabase.from('configuracoes').update({ ...regras, atualizado_em: new Date().toISOString() }).eq('id', 1).select()));
+    const r = await agir(() => consulta(supabase.from('configuracoes').update({ ...regras, exigir_fechamento: d.exigir_fechamento === 'true', atualizado_em: new Date().toISOString() }).eq('id', 1).select()));
     if (r?.length) { est.regras = r[0]; TOL_AFERICAO = Number(r[0].tol_afericao); TOL_REGUA = Number(r[0].tol_regua); avisar('Regras salvas. Valem para os próximos lançamentos.'); }
     else if (r) avisar('Só o administrador altera as regras.', 'warn');
     return;
@@ -1230,6 +1300,17 @@ document.addEventListener('click', async e => {
     if (!confirmarDuasVezes('Toque de novo para apagar')) return;
     const r = await chamar(async () => { await rpc('dev_apagar', { p_tabela: est.banco.tabela, p_chave: JSON.parse(b.dataset.dbChave) }); return true; });
     if (r) { avisar('Linha apagada. Ficou no histórico.'); abrir('banco', { semCarregando: true }); }
+  } else if (acao === 'visto') {
+    const ok = await agir(async () => { await rpc('marcar_visto', { p_tipo: b.dataset.tipo, p_chave: b.dataset.chave }); return true; });
+    if (ok) { b.closest('li')?.remove(); avisar('Marcado como visto.'); atualizarContadores(); }
+  } else if (acao === 'folha') {
+    if (demo()) { avisar('Modo demonstração: a folha usa os dados reais; saia da demonstração para baixar.', 'info'); return; }
+    b.disabled = true;
+    await chamar(async () => {
+      const f = await rpc('folha_do_dia', { p_dia: b.dataset.dia });
+      await salvarPdf(await montarFolha(f, '../comum/logo-ritmo.jpg'), nomeFolha(f.data));
+    });
+    b.disabled = false;
   } else if (acao === 'exportar-consulta') {
     if (demo()) { avisar('Modo demonstração: as planilhas usam os dados reais; saia da demonstração para baixar.', 'info'); return; }
     await chamar(() => exportarConsulta(b.dataset.tipo));

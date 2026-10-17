@@ -6,6 +6,7 @@ import { App } from '@capacitor/app';
 import { Haptics, NotificationType } from '@capacitor/haptics';
 import { esc, nf, parseNum, hhmm, hojeISO, horaAgora, classeStatus, ler, gravar } from '../comum/util.js';
 import { tirarFoto, enviarFotos } from '../comum/fotos.js';
+import { montarFolha, salvarPdf, nomeFolha } from '../comum/folha.js';
 import { vigiarAtualizacoes, situacaoAtualizacao, novidadeAplicada, confirmarAbertura, versaoAtual } from '../comum/atualizacao.js';
 import { aplicarTema, htmlTema, definirTema, protegerContraMoldura } from '../comum/tema.js';
 import { htmlGuia, htmlAbasGuia } from '../comum/guia.js';
@@ -16,7 +17,7 @@ aplicarTema();
 const URL_PAINEL = __ALVO__ === 'android' ? 'painel/index.html' : '../painel/';
 
 // Regras da conferência: as mesmas do banco (o administrador ajusta no painel); estes são os valores padrão até o banco responder
-const LIM = { kmSalto: 3000, tolCap: 1.05, tolEnc: 1, tolTanque: 20, tolAfericao: 0.1 };
+const LIM = { kmSalto: 3000, tolCap: 1.05, tolEnc: 1, tolTanque: 20, tolAfericao: 0.1, atrasoMin: 30, prazoFechamento: 30 };
 const mL = litros => `${nf(litros * 1000, 0)} mL`;
 const MAX_FOTOS = 6;
 const $ = id => document.getElementById(id);
@@ -54,12 +55,12 @@ let TANQUE_PADRAO = '1100';   // tanque de caminhão novo (vem das regras do ban
 function aplicarRegras(r) {
   if (!r) return;
   Object.assign(LIM, { kmSalto: Number(r.km_salto), tolCap: Number(r.tol_capacidade), tolEnc: Number(r.tol_encerrante), tolTanque: Number(r.tol_regua),
-    tolAfericao: Number(r.tol_afericao) });
+    tolAfericao: Number(r.tol_afericao), atrasoMin: Number(r.atraso_lancamento_min ?? 30), prazoFechamento: Number(r.prazo_fechamento_min ?? 30) });
   TANQUE_PADRAO = String(Number(r.tanque_padrao)).replace('.', ',');
 }
 const novoForm = () => ({ bomba: estado?.bombas?.length === 1 ? estado.bombas[0].numero : null, placa: '', motorista: '', placaTxt: '', motoristaTxt: '',
   capacidade: TANQUE_PADRAO, cpf: '', fotos: [],
-  hora: horaAgora(), km: '', litros: '', enc: '', obs: '', desconto: null, justificativa: '', justHorario: '' });
+  hora: horaAgora(), km: '', litros: '', enc: '', obs: '', desconto: null, justificativa: '' });
 
 // ---------- Busca de placa e motorista (o frentista digita o começo e toca na sugestão) ----------
 const MAX_SUGESTOES = 6;
@@ -114,8 +115,28 @@ function foraDoTurno(hm) {
 function avisoFechamento() {
   if (!estado?.turno || estado.fechado_hoje) return '';
   const falta = minutos(estado.turno.fechamento) - minutos(horaAgora());
+  if (falta <= 0 && falta > -LIM.prazoFechamento) {
+    return `<div class="toast warn" role="status">O turno acabou às ${esc(estado.turno.fechamento)}. Meça os tanques e feche o turno até ${esc(somaMin(estado.turno.fechamento, LIM.prazoFechamento))}.</div>`;
+  }
   return falta > 0 && falta <= 30
     ? `<div class="toast info" role="status">Faltam ${falta} min para o fechamento do turno (${esc(estado.turno.fechamento)}). Não esqueça de medir os tanques e fechar o turno.</div>` : '';
+}
+const somaMin = (hm, n) => { const t = (minutos(hm) + n) % 1440; return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; };
+// Dia anterior aberto: o posto não abre até alguém fechar (o frentista da manhã mede a régua antes de abastecer)
+const diaCurto = iso => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+const pendentes = () => estado?.dias_sem_fechamento || [];
+function travaPendente() {
+  const p = pendentes(), ultimo = p[p.length - 1];
+  if (p.length > 1) {
+    return `<div class="aviso-grande"><b>${p.length} dias sem fechamento do turno</b>
+      <p>O posto só abre com o turno anterior fechado. ${p.length > 2 ? 'Os dias' : 'O dia'} ${p.slice(0, -1).map(diaCurto).join(', ')} o supervisor fecha pelo painel;
+      depois você mede a régua e fecha o de ${diaCurto(ultimo)} aqui.</p></div>
+      <button class="btn ghost" type="button" data-acao="atualizar">O supervisor já fechou? Atualizar</button>`;
+  }
+  return `<div class="aviso-grande"><b>O turno de ${diaCurto(ultimo)} não foi fechado</b>
+    <p>Para abrir o posto, meça a régua dos tanques agora, antes de abastecer, e feche o turno de ${diaCurto(ultimo)}.
+    O supervisor vai ver que o fechamento foi feito depois do prazo e por quem.</p></div>
+    <button class="btn" type="button" data-acao="ir-fechar">Fechar o turno de ${diaCurto(ultimo)}</button>`;
 }
 // Aferição é semanal em cada bomba: lembra na tela de abastecer quando alguma passou de 7 dias
 function avisoAfericao() {
@@ -146,7 +167,11 @@ function conferir(f) {
   if (!(enc > 0)) bloqueios.push('Informe o encerrante final.');
   if (f.desconto === null) bloqueios.push('Diga se o diesel foi descontado do motorista.');
   if (f.desconto === false && f.justificativa.trim().length < 5) bloqueios.push('Escreva a justificativa para o supervisor.');
-  if (foraDoTurno(f.hora) && f.justHorario.trim().length < 5) bloqueios.push('Fora do horário do turno: escreva a justificativa.');
+  const agora = horaAgora();
+  if (foraDoTurno(agora)) bloqueios.unshift(`O posto está fora do horário do turno (${estado.turno.abertura} às ${estado.turno.fechamento}).`);
+  else if (/^\d{2}:\d{2}$/.test(f.hora) && foraDoTurno(f.hora)) bloqueios.push('A hora digitada está fora do turno.');
+  else if (/^\d{2}:\d{2}$/.test(f.hora) && minutos(agora) - minutos(f.hora) > LIM.atrasoMin) bloqueios.push(`A hora é de mais de ${LIM.atrasoMin} minutos atrás: lance logo depois de abastecer.`);
+  else if (/^\d{2}:\d{2}$/.test(f.hora) && minutos(f.hora) - minutos(agora) > 10) bloqueios.push('A hora está no futuro: confira.');
   if (precisaCapacidade(f) && !(parseNum(f.capacidade) > 0 && parseNum(f.capacidade) < 5000)) bloqueios.push('Informe o tamanho do tanque do veículo.');
   if (precisaCpf(f) && !cpfValido(f.cpf)) bloqueios.push('Informe o CPF do motorista.');
   if (f.fotos.length !== 1) bloqueios.push('Tire a foto do comprovante junto com o visor da bomba.');
@@ -323,6 +348,7 @@ function telaBoasVindas() {
     <svg class="check" viewBox="0 0 76 76" aria-hidden="true" style="--i:0"><circle cx="38" cy="38" r="38"/><path d="M24 39l9 9 19-20"/></svg>
     <h1 style="--i:1">${oi}, ${esc(String(login.nome).split(' ')[0])}</h1>
     <div class="resumo-turno">${linhas.map(([a, b], i) => `<div style="--i:${i + 2}"><span>${esc(a)}</span><b>${b}</b></div>`).join('')}
+      ${pendentes().length ? `<div class="lembrete" style="--i:${linhas.length + 2}"><span>Turno de ${diaCurto(pendentes()[pendentes().length - 1])} não foi fechado: feche antes de abrir</span></div>` : ''}
       ${estado.fechado_hoje ? `<div class="lembrete" style="--i:${linhas.length + 2}"><span>O turno de hoje já foi fechado</span></div>` : ''}
       ${vencidas.length ? `<div class="lembrete" style="--i:${linhas.length + 2}"><span>Aferição da${vencidas.length > 1 ? 's bombas' : ' bomba'} ${vencidas.join(' e ')} vencida</span><span>aba Aferir</span></div>` : ''}</div>
     <div class="barra" style="--i:${linhas.length + 3}"><i></i></div>
@@ -364,7 +390,7 @@ function campoMotorista() {
 }
 
 // Botão Limpar (só aparece quando há algo preenchido) e a confirmação na própria tela
-const temAlgoPreenchido = () => [form.placaTxt, form.motoristaTxt, form.km, form.litros, form.enc, form.obs, form.justificativa, form.justHorario, form.cpf]
+const temAlgoPreenchido = () => [form.placaTxt, form.motoristaTxt, form.km, form.litros, form.enc, form.obs, form.justificativa, form.cpf]
   .some(x => String(x || '').trim()) || form.desconto !== null || !!form.usarPreco || form.fotos.length > 0;
 function blocoLimpar() {
   if (confirmaLimpar) {
@@ -391,6 +417,7 @@ function blocoPreco() {
 }
 
 function telaAbastecer() {
+  if (pendentes().length) return avisoHtml() + travaPendente();
   if (estado.fechado_hoje) return avisoHtml() + diaFechado();
   if (!estado.bombas.length) return '<p class="hint">Nenhuma bomba cadastrada. Peça ao supervisor.</p>';
   const c = conferir(form);
@@ -398,12 +425,11 @@ function telaAbastecer() {
   const enc = parseNum(form.enc);
   const falha = c.falhas.length > 0;
   const semDesconto = form.desconto === false;
-  const fora = foraDoTurno(form.hora);
   const pode = !c.bloqueios.length && (!falha || form.obs.trim().length >= 5);
   const v = estado.veiculos.find(x => x.placa === form.placa);
   const variosTanques = new Set(estado.bombas.map(b => b.tanque)).size > 1;
   return `
-    ${avisoHtml()}${avisoFechamento()}${avisoAfericao()}
+    ${avisoHtml()}${foraDoTurno(horaAgora()) ? `<div class="toast warn" role="status">Fora do horário do turno (${esc(estado.turno.abertura)} às ${esc(estado.turno.fechamento)}): o posto não aceita abastecimento agora.</div>` : ''}${avisoFechamento()}${avisoAfericao()}
     ${blocoLimpar()}
     <div class="field"><span class="lbl">Em qual bomba foi o abastecimento?</span><div class="bombas">
       ${estado.bombas.map(b => `<button type="button" data-bomba="${b.numero}" aria-pressed="${b.numero === form.bomba}"><b>${b.numero}</b>
@@ -416,9 +442,6 @@ function telaAbastecer() {
         ${v ? `<span class="hint">Último: ${v.km_anterior == null ? 'sem registro' : nf(v.km_anterior, 0) + ' km'}</span>` : ''}</div>
       <div class="field"><label class="lbl" for="f-hora">Hora</label><input id="f-hora" type="time" value="${esc(form.hora)}"></div>
     </div>
-    ${fora ? `<div class="field fora"><span class="chip hora">Fora do horário do turno (${esc(estado.turno.abertura)}–${esc(estado.turno.fechamento)})</span>
-      <label class="lbl" for="f-just-h">Por que foi abastecido fora do horário? (o supervisor precisa autorizar)</label>
-      <textarea id="f-just-h" rows="2" maxlength="500">${esc(form.justHorario)}</textarea></div>` : ''}
     <div class="row2">
       <div class="field"><label class="lbl" for="f-litros">Litros (visor)</label><input id="f-litros" class="num" inputmode="decimal" value="${esc(form.litros)}"></div>
       <div class="field"><label class="lbl" for="f-enc">Encerrante final</label><input id="f-enc" class="num" inputmode="decimal" value="${esc(form.enc)}"></div>
@@ -437,11 +460,11 @@ function telaAbastecer() {
         <button type="button" data-desconto="sim" aria-pressed="${form.desconto === true}">Sim, descontado</button>
         <button type="button" data-desconto="nao" aria-pressed="${semDesconto}">Não</button>
       </div>
-      ${semDesconto ? `<label class="lbl" for="f-just">Por que não foi descontado? (o supervisor precisa autorizar)</label>
+      ${semDesconto ? `<label class="lbl" for="f-just">Por que não foi descontado? (o supervisor vai ver)</label>
         <textarea id="f-just" rows="2" maxlength="500">${esc(form.justificativa)}</textarea>` : ''}</div>
     ${blocoFotos(form.fotos, 'abastecimento', 1, 1, 'Foto do comprovante com o visor da bomba')}
-    ${botaoEnviar('enviar', semDesconto || fora ? 'Pedir autorização ao supervisor' : falha ? 'Enviar para o supervisor' : 'Enviar abastecimento', pode,
-      '', c.bloqueios.length ? `Falta: ${c.bloqueios[0].replace(/\.$/, '')}${c.bloqueios.length > 1 ? ` (e mais ${c.bloqueios.length - 1})` : ''}` : '')}`;
+    ${botaoEnviar('enviar', falha ? 'Enviar para o supervisor' : 'Enviar abastecimento', pode,
+      '', c.bloqueios.length ? `${c.bloqueios[0].replace(/\.$/, '')}${c.bloqueios.length > 1 ? ` (e mais ${c.bloqueios.length - 1})` : ''}` : '')}`;
 }
 
 function telaNovoVeiculo() {
@@ -511,10 +534,12 @@ function telaTurno() {
       ${r.problemas?.length ? `<ul>${r.problemas.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
     </div>`).join('') : '<p class="hint">Nenhum abastecimento hoje.</p>'}
     <button class="btn ghost" type="button" data-acao="atualizar">Atualizar</button>
+    <button class="btn ghost" type="button" data-acao="folha" data-dia="${esc(estado.dia)}">Baixar a folha do turno de hoje (PDF)</button>
     <p class="hint">Atualizado às ${hhmm(estado.gerado_em)} · turno das ${esc(estado.turno?.abertura)} às ${esc(estado.turno?.fechamento)}.</p>`;
 }
 
 function telaChegada() {
+  if (pendentes().length) return avisoHtml() + travaPendente();
   if (estado.fechado_hoje) return avisoHtml() + diaFechado();
   const f = chegada, l = parseNum(f.litros), sub = parseNum(f.depois) - parseNum(f.antes);
   const okRegua = l > 0 && sub > 0 && Math.abs(sub - l) <= LIM.tolTanque;
@@ -585,6 +610,7 @@ function historicoAfericoes() {
 }
 
 function telaAfericao() {
+  if (pendentes().length) return avisoHtml() + travaPendente() + historicoAfericoes();
   if (estado.fechado_hoje) return avisoHtml() + diaFechado() + historicoAfericoes();
   if (!estado.bombas.length) return '<p class="hint">Nenhuma bomba cadastrada. Peça ao supervisor.</p>';
   const f = afericao, v = parseNum(f.visor), dif = v - 20;
@@ -609,17 +635,24 @@ function telaAfericao() {
 }
 
 function telaFechar() {
-  if (estado.tanques.some(t => t.fechado)) {
-    return `${avisoHtml()}<div class="toast ok">O turno de hoje já foi fechado.</div>${estado.tanques.map(t => `<div class="tanque"><h3>${esc(t.tanque)}</h3>
+  const p = pendentes();
+  if (p.length > 1) return avisoHtml() + travaPendente();
+  const diaPendente = p[0] || null, tanques = diaPendente ? estado.tanques_pendente || [] : estado.tanques;
+  if (!diaPendente && estado.tanques.some(t => t.fechado)) {
+    return `${avisoHtml()}<div class="toast ok">O turno de hoje já foi fechado.</div>
+      <button class="btn ghost" type="button" data-acao="folha" data-dia="${esc(estado.dia)}">Baixar a folha do turno (PDF)</button>${estado.tanques.map(t => `<div class="tanque"><h3>${esc(t.tanque)}</h3>
       <div class="medidor"><span>Esperado</span><span class="v">${nf(t.fechado.saldo_calculado, 0)} L</span>
       <span>Medido (régua)</span><span class="v">${nf(t.fechado.saldo_medido, 0)} L</span>
       <span class="tot">Diferença</span><span class="v tot">${nf(t.fechado.diferenca, 0)} L</span></div></div>`).join('')}`;
   }
-  const completos = estado.tanques.length && estado.tanques.every(t => !Number.isNaN(parseNum(medidos[t.tanque])));
+  const completos = tanques.length && tanques.every(t => !Number.isNaN(parseNum(medidos[t.tanque])));
+  const passouPrazo = !diaPendente && estado.turno && minutos(horaAgora()) > minutos(estado.turno.fechamento) + LIM.prazoFechamento;
   return `
     ${avisoHtml()}
-    <p class="hint">Meça os tanques no fim do turno. O sistema compara com o que entrou e saiu pelas bombas.</p>
-    ${estado.tanques.map(t => {
+    ${diaPendente ? `<div class="toast warn">Fechando o turno de <b>${diaCurto(diaPendente)}</b>, que ficou aberto. Meça a régua agora, antes de abastecer.</div>`
+      : `<p class="hint">Meça os tanques no fim do turno. O sistema compara com o que entrou e saiu pelas bombas.</p>`}
+    ${passouPrazo ? `<p class="hint">O prazo (até ${esc(somaMin(estado.turno.fechamento, LIM.prazoFechamento))}) passou: o fechamento vale, mas fica marcado como atrasado para o supervisor.</p>` : ''}
+    ${tanques.map(t => {
       const m = parseNum(medidos[t.tanque]), dif = m - t.saldo_calculado;
       return `<div class="tanque"><h3>${esc(t.tanque)}</h3>
         <div class="medidor">
@@ -634,7 +667,7 @@ function telaFechar() {
           ? `Diferença de ${nf(dif, 0)} L, dentro da tolerância.` : `Diferença de ${nf(dif, 0)} L. O supervisor vai receber um alerta.`}</li></ul>` : ''}
       </div>`; }).join('')}
     ${blocoFotos(fotosFechamento, 'fechamento')}
-    ${botaoEnviar('fechar', 'Fechar turno', completos)}`;
+    ${botaoEnviar('fechar', diaPendente ? `Fechar o turno de ${diaCurto(diaPendente)}` : 'Fechar turno', completos)}`;
 }
 
 function telaAjuda() {
@@ -711,7 +744,7 @@ function render(manterFoco) {
 
 // ---------- Eventos ----------
 const mapaForm = { 'f-cap': 'capacidade', 'f-cpf': 'cpf', 'f-hora': 'hora', 'f-km': 'km', 'f-litros': 'litros', 'f-enc': 'enc',
-  'f-obs': 'obs', 'f-just': 'justificativa', 'f-just-h': 'justHorario' };
+  'f-obs': 'obs', 'f-just': 'justificativa' };
 const mapaChegada = { 'c-tanque': 'tanque', 'c-hora': 'hora', 'c-nf': 'nf', 'c-litros': 'litros', 'c-valor': 'valor', 'c-antes': 'antes',
   'c-depois': 'depois', 'c-placa': 'placa', 'c-carreta': 'carreta', 'c-motorista': 'motorista', 'c-cpf': 'cpf' };
 const mapaVeiculo = { 'v-placa': 'placa', 'v-cap': 'capacidade', 'v-km': 'km' };
@@ -796,6 +829,15 @@ conteudo.addEventListener('click', async e => {
   }
   if (acao === 'salvar-correcao') await executar(salvarCorrecao);
   if (acao === 'abrir-app') fecharBoasVindas();
+  if (acao === 'ir-fechar') { aba = 'fechar'; aviso = null; render(); }
+  if (acao === 'folha') {
+    const dia = alvo('[data-acao]').dataset.dia;
+    await executar(async () => {
+      const f = await rpc('folha_do_dia', { p_dia: dia });
+      await salvarPdf(await montarFolha(f, LOGO_RITMO), nomeFolha(f.data));
+      aviso = { tipo: 'ok', texto: `Folha do turno de ${diaCurto(f.data)} pronta.` };
+    });
+  }
   // Limpar o formulário de abastecer: pede confirmação na própria tela; a bomba e a hora ficam
   if (acao === 'limpar') { confirmaLimpar = true; render(); }
   if (acao === 'limpar-nao') { confirmaLimpar = false; render(); }
@@ -879,7 +921,7 @@ async function enviarAbastecimento() {
     uuid: form.uuid || (form.uuid = crypto.randomUUID()), data_hora: `${hojeISO()}T${form.hora}:00`, placa: form.placa, motorista: form.motorista,
     km: Math.round(parseNum(form.km)), litros: parseNum(form.litros), encerrante: parseNum(form.enc), bomba: form.bomba,
     obs: c.falhas.length ? form.obs.trim() : null, desconto: form.desconto, justificativa_desconto: form.desconto ? null : form.justificativa.trim(),
-    justificativa_horario: foraDoTurno(form.hora) ? form.justHorario.trim() : null,
+    justificativa_horario: null,
     capacidade: precisaCapacidade(form) ? parseNum(form.capacidade) : null, cpf: precisaCpf(form) ? form.cpf.replace(/\D/g, '') : null,
     preco: form.usarPreco && estado.preco_diesel ? Number(estado.preco_diesel.preco) : null,
   };
@@ -934,11 +976,15 @@ async function enviarAfericao() {
 }
 
 async function fecharTurno() {
-  const valores = Object.fromEntries(estado.tanques.map(t => [t.tanque, parseNum(medidos[t.tanque])]));
+  const diaPendente = pendentes().length === 1 ? pendentes()[0] : null;
+  const tanques = diaPendente ? estado.tanques_pendente || [] : estado.tanques;
+  const valores = Object.fromEntries(tanques.map(t => [t.tanque, parseNum(medidos[t.tanque])]));
   const caminhos = await enviarFotos('fechamento', fotosFechamento);
-  const r = await rpc('registrar_fechamento', { p_sessao: login.sessao, p_medidos: valores, p_fotos: caminhos });
+  const r = await rpc('registrar_fechamento', { p_sessao: login.sessao, p_medidos: valores, p_fotos: caminhos, p_dia: diaPendente });
   const alertas = r.filter(t => t.alerta).length;
-  aviso = { tipo: alertas ? 'warn' : 'ok', texto: alertas ? `Turno fechado. ${alertas} tanque(s) com diferença: o supervisor foi avisado.` : 'Turno fechado. Tudo bateu.' };
+  const qual = diaPendente ? `Turno de ${diaCurto(diaPendente)} fechado` : 'Turno fechado';
+  aviso = { tipo: alertas ? 'warn' : 'ok', texto: alertas ? `${qual}. ${alertas} tanque(s) com diferença: o supervisor foi avisado.` : `${qual}. Tudo bateu.${diaPendente ? ' O posto está aberto.' : ''}` };
+  if (diaPendente) aba = 'abastecer';
   medidos = {}; fotosFechamento.forEach(x => URL.revokeObjectURL(x.previa)); fotosFechamento = [];
   await atualizarEstado();
 }
@@ -1006,6 +1052,7 @@ function desenharGaveta() {
   const qtd = (k, txt, aviso) => { const el = gaveta.querySelector(`[data-qtd="${k}"]`); if (el) { el.textContent = txt || ''; el.classList.toggle('aviso', !!aviso); } };
   qtd('turno', estado?.hoje?.length || '');
   qtd('aferir', (estado?.bombas || []).some(b => b.afericao_vencida) ? 'vencida' : '', true);
+  qtd('fechar', pendentes().length ? 'turno aberto' : '', true);
 }
 $('menu').addEventListener('click', () => (menuAberto() ? fecharMenu() : abrirMenu()));
 veu.addEventListener('click', fecharMenu);

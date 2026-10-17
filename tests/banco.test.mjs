@@ -67,7 +67,8 @@ before(async () => {
     insert into bombas values (1, 'TQ01', 7071046, true), (2, 'TQ01', 512000, true);   -- 1 tanque, 2 bombas
     insert into veiculos (placa, capacidade_l, km_inicial) values ('ABC1D23', 700, 149500), ('DEF4567', 600, 97500);
     insert into motoristas (nome, cpf) values ('JOAO DA SILVA', '52998224725');
-    update configuracoes set abertura = '00:00', fechamento = '23:59:59';`);
+    -- Nos testes o turno é o dia inteiro, a hora pode ser de dias atrás e o dia anterior aberto não trava (cada regra tem o seu teste)
+    update configuracoes set abertura = '00:00', fechamento = '23:59:59', atraso_lancamento_min = 20160, exigir_fechamento = false;`);
   [ana, carlos] = (await db.query("select id from frentistas order by nome")).rows.map(r => r.id);
   const t = (await db.query("select to_char(agora_local(), 'YYYY-MM-DD\"T\"HH24:MI:SS') as t")).rows[0].t;
   base = new Date(t);
@@ -156,38 +157,39 @@ test('abastecimento com desconto confirmado fica Pronto; toque duplo não duplic
   assert.deepEqual(linha, { frentista_id: ana, conta: POSTO });
 });
 
-test('sem desconto: exige justificativa, espera autorização e não entra em lote até ser aprovado', async () => {
+test('sem desconto: exige justificativa e segue o caminho normal (o diesel já saiu); vira alerta até alguém tocar em Visto', async () => {
   await assert.rejects(abastecer(reg(8, { km: 150300, litros: 100, encerrante: 7071786, desconto: false })), /justificativa/);
   const a = await abastecer(reg(8, { km: 150300, litros: 100, encerrante: 7071786, desconto: false,
     justificativa_desconto: 'Motorista agregado, acerto só no fim do mês' }));
-  assert.equal(a.status, 'Aguardando autorização');
-  const ok = await rpc(CHEFE, 'decidir_autorizacao', { p_id: a.id, p_aprovar: true, p_motivo: 'Desconto será feito no acerto' });
-  assert.equal(ok.status, 'Pronto');
-  assert.equal(ok.autorizado_por, CHEFE);
-  await assert.rejects(rpc(CHEFE, 'decidir_autorizacao', { p_id: a.id, p_aprovar: true, p_motivo: 'de novo' }), /não está aguardando/);
+  assert.equal(a.status, 'Pronto');   // não espera autorização: vai para o KMM
+  await assert.rejects(rpc(POSTO, 'marcar_visto', { p_tipo: 'desconto', p_chave: String(a.id) }), /Acesso negado/);
+  await rpc(CHEFE, 'marcar_visto', { p_tipo: 'desconto', p_chave: String(a.id) });
+  assert.equal((await db.query('select alerta_visto_por from abastecimentos where id = $1', [a.id])).rows[0].alerta_visto_por, CHEFE);
+  await assert.rejects(rpc(DONO, 'marcar_visto', { p_tipo: 'desconto', p_chave: String(a.id) }), /já foi visto/);
 });
 
-test('fora do horário do turno: exige justificativa e vai para autorização', async () => {
-  const hora = (await db.query("select to_char(agora_local() - interval '3 minutes', 'HH24:MI:SS') as h")).rows[0].h;
-  await db.exec(`update configuracoes set abertura = '${hora}', fechamento = '${hora}'::time + interval '1 minute'`);
+test('fora do horário não entra: nem com o posto fechado agora, nem com hora digitada fora do turno ou atrasada', async () => {
+  const hora = d => `(agora_local() + interval '${d} minutes')::time`;
+  const d = { placa: 'DEF4567', km: 98000, litros: 5, encerrante: 7071791 };
   try {
-    await assert.rejects(abastecer(reg(5, { placa: 'DEF4567', km: 98000, litros: 5, encerrante: 7071791 })), /fora do horário do turno/);
-    const a = await abastecer(reg(5, { placa: 'DEF4567', km: 98000, litros: 5, encerrante: 7071791, justificativa_horario: 'Entrega urgente depois do fechamento' }));
-    assert.equal(a.status, 'Aguardando autorização');
-    const linha = (await db.query('select fora_horario, justificativa_horario from abastecimentos where id = $1', [a.id])).rows[0];
-    assert.deepEqual(linha, { fora_horario: true, justificativa_horario: 'Entrega urgente depois do fechamento' });
-    await rpc(CHEFE, 'decidir_autorizacao', { p_id: a.id, p_aprovar: false, p_motivo: 'Teste: recusado' });
+    await db.exec(`update configuracoes set abertura = ${hora(60)}, fechamento = ${hora(120)}`);   // turno só daqui a 1 hora
+    await assert.rejects(abastecer(reg(0, d)), /fora do horário do turno/);
+    await db.exec(`update configuracoes set abertura = ${hora(-10)}, fechamento = ${hora(60)}`);   // abriu há 10 minutos
+    await assert.rejects(abastecer(reg(20, d)), /está fora do turno/);                               // hora digitada antes da abertura
+    await db.exec(`update configuracoes set abertura = '00:00', fechamento = '23:59:59', atraso_lancamento_min = 30`);
+    await assert.rejects(abastecer(reg(45, d)), /mais de 30 minutos atrás/);
   } finally {
-    await db.exec("update configuracoes set abertura = '00:00', fechamento = '23:59:59'");
+    await db.exec("update configuracoes set abertura = '00:00', fechamento = '23:59:59', atraso_lancamento_min = 20160");
   }
+  assert.equal((await db.query("select count(*)::int as n from abastecimentos where placa = 'DEF4567'")).rows[0].n, 0);
 });
 
-test('autorização recusada cancela o lançamento', async () => {
-  const a = await abastecer(reg(7, { placa: 'DEF4567', km: 98000, litros: 10, encerrante: 7071796, desconto: false,
-    justificativa_desconto: 'Sem tempo de descontar' }));
-  const r = await rpc(CHEFE, 'decidir_autorizacao', { p_id: a.id, p_aprovar: false, p_motivo: 'Precisa descontar antes' });
-  assert.equal(r.status, 'Cancelado');
-  assert.match(r.obs_supervisor, /recusada/);
+test('lançamento antigo que esperava autorização só por falta de desconto passa a seguir o caminho normal', async () => {
+  const a = await abastecer(reg(7, { placa: 'DEF4567', km: 98000, litros: 10, encerrante: 7071796, desconto: false, justificativa_desconto: 'Sem tempo de descontar' }));
+  await db.exec(`update abastecimentos set status = 'Aguardando autorização' where id = ${a.id}`);   // como ficava na regra antiga
+  await db.exec(SCHEMA);
+  assert.notEqual((await db.query('select status from abastecimentos where id = $1', [a.id])).rows[0].status, 'Aguardando autorização');
+  await rpc(CHEFE, 'decidir_abastecimento', { p_id: a.id, p_acao: 'cancelar', p_motivo: 'Teste da regra nova' });   // não entra nas contas dos outros testes
 });
 
 test('banco reconfere: encerrante não bate vira Exceção, com número formatado', async () => {
@@ -413,6 +415,39 @@ test('caminhão de diesel: a primeira chegada cadastra; nas próximas a placa do
   assert.equal((await como(CHEFE, "update caminhoes_diesel set motorista = 'marcos  de lima' where placa_cavalo = 'SUT4I86' returning motorista"))[0].motorista, 'MARCOS DE LIMA');
   const aud = (await db.query("select papel from auditoria where acao = 'cadastro.caminhoes_diesel.insert'")).rows;
   assert.deepEqual(aud, [{ papel: 'posto' }]);
+});
+
+test('posto não abre com o turno anterior aberto: o frentista da manhã fecha (atrasado, vira alerta); com dois dias, o supervisor fecha o antigo sem medição', async () => {
+  const dia = n => dh(60 * 24 * n).slice(0, 10);
+  // dois dias atrás e ontem com movimento e sem fechamento (aferição: não mexe nas contas dos outros testes)
+  const aferir = n => rpc(POSTO, 'registrar_afericao', { p_sessao: sessao, p_fotos: [foto('afericao')],
+    p_dados: { uuid: randomUUID(), bomba: 1, data_hora: dh(60 * 24 * n), visor: 20 } });
+  await aferir(2); await aferir(1);
+  await db.exec('update configuracoes set exigir_fechamento = true');
+  try {
+    let e = await rpc(POSTO, 'estado_posto');
+    assert.deepEqual(e.dias_sem_fechamento, [dia(2), dia(1)]);
+    await assert.rejects(abastecer(reg(0, { km: 150250, litros: 1, encerrante: 1 })), /não foi fechado/);
+    await assert.rejects(rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_dia: dia(1) }), /O supervisor fecha os mais antigos/);
+    await assert.rejects(rpc(CHEFE, 'fechar_sem_medicao', { p_dia: dia(1), p_motivo: 'Dois dias sem fechar' }), /dia mais antigo/);
+    const r = await rpc(CHEFE, 'fechar_sem_medicao', { p_dia: dia(2), p_motivo: 'Frentista esqueceu dois dias' });
+    assert.equal(r.tanques, 1);
+    e = await rpc(POSTO, 'estado_posto');
+    assert.deepEqual(e.dias_sem_fechamento, [dia(1)]);
+    assert.equal(e.tanques_pendente[0].tanque, 'TQ01');
+    // o frentista da manhã mede a régua e fecha o de ontem: fica marcado como atrasado, com quem trabalhou no dia
+    await rpc(POSTO, 'registrar_fechamento', { p_sessao: sessao, p_medidos: { TQ01: 12000 }, p_dia: dia(1) });
+    const f = (await db.query('select atrasado, sem_medicao from fechamentos where data = $1', [dia(1)])).rows[0];
+    assert.deepEqual(f, { atrasado: true, sem_medicao: false });
+    assert.deepEqual((await rpc(POSTO, 'estado_posto')).dias_sem_fechamento, []);
+    await rpc(DONO, 'marcar_visto', { p_tipo: 'fechamento', p_chave: dia(1) });
+    // depois de fechar, a folha do dia sai para o PDF; no celular, o CPF vem mascarado
+    const folha = await rpc(POSTO, 'folha_do_dia', { p_dia: dia(1) });
+    assert.equal(folha.fechado, true);
+  } finally {
+    await db.exec('update configuracoes set exigir_fechamento = false');
+    await db.exec(`delete from fechamentos where data in ('${dia(1)}', '${dia(2)}')`);   // os outros testes usam esses dias abertos
+  }
 });
 
 // ---------- Chegada, fechamento e fotos ----------

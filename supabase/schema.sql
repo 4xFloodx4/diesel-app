@@ -127,6 +127,12 @@ alter table configuracoes add column if not exists tol_capacidade numeric(4, 2) 
 alter table configuracoes add column if not exists tol_regua numeric(8, 1) not null default 20 check (tol_regua between 0 and 5000);
 alter table configuracoes add column if not exists tol_afericao numeric(6, 3) not null default 0.1 check (tol_afericao between 0 and 5);
 alter table configuracoes add column if not exists tanque_padrao numeric(8, 1) not null default 1100 check (tanque_padrao > 0 and tanque_padrao < 5000);
+-- Abastecimento só dentro do turno, lançado logo depois (a hora digitada pode ser de até N minutos atrás)
+alter table configuracoes add column if not exists atraso_lancamento_min integer not null default 30 check (atraso_lancamento_min between 0 and 20160);
+-- Prazo para fechar o turno depois do fim; depois disso o fechamento ainda vale, mas fica marcado como atrasado (alerta)
+alter table configuracoes add column if not exists prazo_fechamento_min integer not null default 30 check (prazo_fechamento_min between 0 and 720);
+-- Com o dia anterior aberto, o posto não abre: o frentista da manhã mede a régua (o tanque ficou parado à noite) e fecha
+alter table configuracoes add column if not exists exigir_fechamento boolean not null default true;
 
 -- Valor de uma regra da conferência (ex.: regra('km_salto'))
 create or replace function regra(p_nome text) returns numeric
@@ -327,6 +333,9 @@ alter table abastecimentos add column if not exists justificativa_horario text c
 -- Preço do litro usado no lançamento (o frentista toca em "usar o preço atual"); vai para a planilha do KMM
 alter table abastecimentos add column if not exists preco_litro numeric(8, 3) check (preco_litro > 0 and preco_litro < 100);
 alter table abastecimentos add column if not exists valor_total numeric(12, 2) generated always as (round(litros * preco_litro, 2)) stored;
+-- Sem desconto do motorista não espera autorização (o diesel já saiu): vai para o KMM e vira alerta até alguém tocar em Visto
+alter table abastecimentos add column if not exists alerta_visto_por text;
+alter table abastecimentos add column if not exists alerta_visto_em timestamptz;
 alter table abastecimentos drop constraint if exists abastecimentos_status_check;
 alter table abastecimentos add constraint abastecimentos_status_check check (status in
   ('Aguardando autorização', 'Pronto', 'Exceção', 'Em lote', 'Lançado', 'Erro', 'Cancelado'));
@@ -390,6 +399,14 @@ create table if not exists afericoes (
   recebido_em          timestamptz not null default now()
 );
 create index if not exists ix_afer_bomba on afericoes (bomba, data_hora);
+
+-- Fechamento atrasado (depois do prazo; em geral o frentista da manhã fechando o turno da noite) e fechamento sem
+-- medição (o supervisor fecha pelo painel quando não dá para medir). Os dois viram alerta até alguém tocar em Visto.
+alter table fechamentos add column if not exists atrasado boolean not null default false;
+alter table fechamentos add column if not exists sem_medicao boolean not null default false;
+alter table fechamentos add column if not exists motivo text check (length(motivo) <= 500);
+alter table fechamentos add column if not exists alerta_visto_por text;
+alter table fechamentos add column if not exists alerta_visto_em timestamptz;
 
 -- Preço do litro do diesel: o atual é o último registrado. O frentista altera no app (ele recebe o diesel e vê a NF).
 -- Cada mudança fica guardada, com quem mudou e de onde veio (digitado no app ou sugerido pela NF da chegada).
@@ -793,7 +810,8 @@ begin
     'turno', (select jsonb_build_object('abertura', to_char(abertura, 'HH24:MI'), 'fechamento', to_char(fechamento, 'HH24:MI'))
                 from configuracoes where id = 1),
     'regras', (select jsonb_build_object('km_salto', km_salto, 'tol_encerrante', tol_encerrante, 'tol_capacidade', tol_capacidade,
-                 'tol_regua', tol_regua, 'tol_afericao', tol_afericao, 'tanque_padrao', tanque_padrao) from configuracoes where id = 1),
+                 'tol_regua', tol_regua, 'tol_afericao', tol_afericao, 'tanque_padrao', tanque_padrao,
+                 'atraso_lancamento_min', atraso_lancamento_min, 'prazo_fechamento_min', prazo_fechamento_min) from configuracoes where id = 1),
     'preco_diesel', (select jsonb_build_object('preco', p.preco, 'em', p.criado_em, 'por', f.nome, 'origem', p.origem)
                        from precos_diesel p left join frentistas f on f.id = p.frentista_id order by p.id desc limit 1),
     -- histórico das aferições na aba Aferir, com quem fez
@@ -801,6 +819,10 @@ begin
         select a.bomba, a.data_hora, a.visor_l, a.diferenca_l, f.nome as frentista from afericoes a join frentistas f on f.id = a.frentista_id
          order by a.data_hora desc limit 12) x), '[]'),
     'fechado_hoje', exists (select 1 from fechamentos where data = v_hoje),
+    -- dia que ficou aberto: o app só deixa fechar ele (o posto não abre). Com mais de um, o supervisor fecha os antigos.
+    'dias_sem_fechamento', case when (select exigir_fechamento from configuracoes where id = 1) then to_jsonb(dias_sem_fechamento()) else '[]' end,
+    'tanques_pendente', case when (select exigir_fechamento from configuracoes where id = 1) and cardinality(dias_sem_fechamento()) = 1
+                             then calcular_fechamento((dias_sem_fechamento())[1]) end,
     'hoje', coalesce((select jsonb_agg(jsonb_build_object(
         'id', a.id, 'uuid', a.uuid, 'data_hora', a.data_hora, 'placa', a.placa, 'motorista', a.motorista, 'km', a.km,
         'litros', a.litros, 'encerrante', a.encerrante, 'bomba', a.bomba, 'status', a.status, 'problemas', a.problemas,
@@ -819,6 +841,47 @@ create or replace function trava_lancamento(p_bomba integer, p_placa text) retur
 language sql as $$
   select pg_advisory_xact_lock(1, coalesce(p_bomba, 0)), pg_advisory_xact_lock(2, hashtext(normaliza_placa(p_placa)))
 $$;
+
+-- Dias (dos últimos 7) que ficaram sem fechamento: antes de hoje, com abastecimento, chegada ou aferição, e sem fechamento
+create or replace function dias_sem_fechamento() returns date[]
+language sql stable security definer set search_path = public as $$
+  select coalesce(array_agg(x.d order by x.d), '{}') from (
+    select data_hora::date as d from abastecimentos where status <> 'Cancelado' and data_hora::date between hoje() - 7 and hoje() - 1
+    union select data_hora::date from chegadas where not cancelada and data_hora::date between hoje() - 7 and hoje() - 1
+    union select data_hora::date from afericoes where data_hora::date between hoje() - 7 and hoje() - 1) x
+   where not exists (select 1 from fechamentos f where f.data = x.d)
+$$;
+
+-- O posto só abre com o turno anterior fechado (se a regra estiver ligada)
+create or replace function exigir_turno_anterior_fechado() returns void
+language plpgsql stable security definer set search_path = public as $$
+declare v date[] := dias_sem_fechamento();
+begin
+  if cardinality(v) > 0 and (select exigir_fechamento from configuracoes where id = 1) then
+    raise exception 'O turno de % não foi fechado. Feche o turno anterior antes de abrir o posto.', to_char(v[cardinality(v)], 'DD/MM')
+      using errcode = '22023';
+  end if;
+end $$;
+
+-- Abastecimento: agora tem que ser horário do turno, e a hora digitada também, de no máximo N minutos atrás
+create or replace function validar_hora_abastecimento(p_dh timestamp) returns void
+language plpgsql stable security definer set search_path = public as $$
+declare c configuracoes;
+begin
+  select * into c from configuracoes where id = 1;
+  if fora_do_turno(agora_local()) then
+    raise exception 'O posto está fora do horário do turno (% às %). Abastecimento não é aceito agora.',
+      to_char(c.abertura, 'HH24:MI'), to_char(c.fechamento, 'HH24:MI') using errcode = '22023';
+  end if;
+  if fora_do_turno(p_dh) then
+    raise exception 'A hora % está fora do turno (% às %).', to_char(p_dh, 'HH24:MI'), to_char(c.abertura, 'HH24:MI'), to_char(c.fechamento, 'HH24:MI')
+      using errcode = '22023';
+  end if;
+  if p_dh < agora_local() - make_interval(mins => c.atraso_lancamento_min) then
+    raise exception 'A hora % é de mais de % minutos atrás. Lance logo depois de abastecer, com a hora certa.', to_char(p_dh, 'HH24:MI'), c.atraso_lancamento_min
+      using errcode = '22023';
+  end if;
+end $$;
 
 -- Data e hora de um lançamento novo: nem no futuro, nem antiga, nem num dia já fechado
 create or replace function validar_data_lancamento(p_dh timestamp) returns void
@@ -865,21 +928,17 @@ begin
     raise exception 'Valores fora do permitido.' using errcode = '22023';
   end if;
   if not v_desconto and (v_just is null or length(v_just) < 5) then
-    raise exception 'Sem o desconto do motorista, escreva a justificativa para o supervisor.' using errcode = '22023';
+    raise exception 'Sem o desconto do motorista, escreva a justificativa (o supervisor vai ver).' using errcode = '22023';
   end if;
   v_preco := (r ->> 'preco')::numeric;
   if v_preco is not null and (v_preco <= 0 or v_preco >= 100) then raise exception 'Preço do litro inválido.' using errcode = '22023'; end if;
   if coalesce(cardinality(p_fotos), 0) <> 1 then
     raise exception 'Tire a foto do comprovante junto com o visor da bomba (uma foto).' using errcode = '22023';
   end if;
+  perform exigir_turno_anterior_fechado();
   perform validar_data_lancamento(v_dh);
-  v_fora := fora_do_turno(v_dh);
-  v_just_h := nullif(trim(coalesce(r ->> 'justificativa_horario', '')), '');
-  if v_fora and (v_just_h is null or length(v_just_h) < 5) then
-    select * into v_c from configuracoes where id = 1;
-    raise exception 'Lançamento fora do horário do turno (% às %): escreva a justificativa para o supervisor.',
-      to_char(v_c.abertura, 'HH24:MI'), to_char(v_c.fechamento, 'HH24:MI') using errcode = '22023';
-  end if;
+  perform validar_hora_abastecimento(v_dh);   -- fora do horário não entra mais (nem com justificativa)
+  v_fora := false;
   -- Primeira vez de uma placa ou de um motorista vindos da planilha (só placa + nome): completa o cadastro.
   -- O KM não precisa: o deste lançamento vira o primeiro da placa.
   select * into v_veic from veiculos where placa = normaliza_placa(r ->> 'placa') and ativo;
@@ -900,7 +959,7 @@ begin
     update motoristas set cpf = v_cpf where id = v_mot.id;
   end if;
   c := conferir_abastecimento(v_dh, r ->> 'placa', r ->> 'motorista', v_km, v_lt, v_enc, v_bomba);
-  v_status := case when v_desconto and not v_fora then c ->> 'status' else 'Aguardando autorização' end;
+  v_status := c ->> 'status';   -- sem desconto segue o caminho normal e vira alerta para o supervisor (com a justificativa)
   insert into abastecimentos (uuid, data_hora, placa, motorista, cpf, km, litros, encerrante, encerrante_anterior,
                               bomba, tanque, status, problemas, obs_frentista, frentista_id, conta,
                               desconto_confirmado, justificativa_desconto, fora_horario, justificativa_horario, preco_litro)
@@ -941,6 +1000,7 @@ begin
   v_frent := frentista_da_sessao(p_sessao);
   select * into v_ex from chegadas where uuid = (r ->> 'uuid')::uuid;
   if v_ex.id is not null then return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'alerta', v_ex.alerta); end if;
+  perform exigir_turno_anterior_fechado();
   perform validar_data_lancamento(date_trunc('second', (r ->> 'data_hora')::timestamp));
   v_lt := (r ->> 'litros')::numeric;
   if v_lt is null or v_lt <= 0 or v_lt >= 100000 then raise exception 'Litros da nota fora do permitido.' using errcode = '22023'; end if;
@@ -978,15 +1038,33 @@ begin
   return jsonb_build_object('uuid', r ->> 'uuid', 'id', v_id, 'alerta', v_alerta);
 end $$;
 
-create or replace function registrar_fechamento(p_sessao text, p_medidos jsonb, p_fotos text[] default '{}') returns jsonb
+-- Fechar o turno: o de hoje, ou o dia que ficou aberto (o frentista da manhã mede a régua antes de abastecer; o tanque
+-- ficou parado à noite). Depois do prazo (fim do turno + N minutos) o fechamento vale, mas fica marcado como atrasado.
+-- Com mais de um dia aberto, os mais antigos o supervisor fecha pelo painel (sem medição): só o último dá para medir.
+drop function if exists registrar_fechamento(text, jsonb, text[]);
+create or replace function registrar_fechamento(p_sessao text, p_medidos jsonb, p_fotos text[] default '{}', p_dia date default null) returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare v_dia date := hoje(); t jsonb; v_med numeric; v_dif numeric; v_res jsonb := '[]'; v_frent bigint;
+declare v_dia date := coalesce(p_dia, hoje()); t jsonb; v_med numeric; v_dif numeric; v_res jsonb := '[]'; v_frent bigint;
+        v_pend date[] := dias_sem_fechamento(); v_c configuracoes; v_atrasado boolean; v_quem text[];
 begin
   perform exigir(array['posto', 'supervisor']);
   v_frent := frentista_da_sessao(p_sessao);
   if exists (select 1 from fechamentos where data = v_dia) then
     raise exception 'O dia já foi fechado.' using errcode = '22023';
   end if;
+  if v_dia > hoje() then raise exception 'Não dá para fechar um dia que ainda não chegou.' using errcode = '22023'; end if;
+  if v_dia < hoje() and not (v_dia = any (v_pend)) then
+    raise exception 'O turno de % não está esperando fechamento.', to_char(v_dia, 'DD/MM') using errcode = '22023';
+  end if;
+  select * into v_c from configuracoes where id = 1;
+  if v_c.exigir_fechamento and (cardinality(v_pend) > 1 or (v_dia = hoje() and cardinality(v_pend) > 0)) then
+    raise exception 'Há dia sem fechamento antes deste (%). O supervisor fecha os mais antigos pelo painel; depois você fecha o de %.',
+      (select string_agg(to_char(d, 'DD/MM'), ', ') from unnest(v_pend) d where d < coalesce(v_pend[cardinality(v_pend)], v_dia) or v_dia = hoje()),
+      to_char(case when v_dia = hoje() and cardinality(v_pend) > 0 then v_pend[cardinality(v_pend)] else v_dia end, 'DD/MM') using errcode = '22023';
+  end if;
+  v_atrasado := agora_local() > v_dia::timestamp + v_c.fechamento + make_interval(mins => v_c.prazo_fechamento_min);
+  select array_agg(distinct f.nome order by f.nome) into v_quem from abastecimentos a join frentistas f on f.id = a.frentista_id
+   where a.data_hora::date = v_dia and a.status <> 'Cancelado';
   if not exists (select 1 from tanques) then
     raise exception 'Nenhum tanque cadastrado. Peça ao supervisor.' using errcode = '22023';
   end if;
@@ -996,16 +1074,16 @@ begin
       raise exception 'Informe a medição do tanque %.', t ->> 'tanque' using errcode = '22023';
     end if;
     v_dif := v_med - (t ->> 'saldo_calculado')::numeric;
-    insert into fechamentos (tanque, data, saldo_inicial, chegadas, saidas, saldo_calculado, saldo_medido, diferenca, frentista_id, conta)
+    insert into fechamentos (tanque, data, saldo_inicial, chegadas, saidas, saldo_calculado, saldo_medido, diferenca, frentista_id, conta, atrasado)
     values (t ->> 'tanque', v_dia, (t ->> 'saldo_inicial')::numeric, (t ->> 'chegadas')::numeric, (t ->> 'saidas')::numeric,
-            (t ->> 'saldo_calculado')::numeric, v_med, v_dif, v_frent, meu_email());
+            (t ->> 'saldo_calculado')::numeric, v_med, v_dif, v_frent, meu_email(), v_atrasado);
     v_res := v_res || jsonb_build_object('tanque', t ->> 'tanque', 'saldo_calculado', (t ->> 'saldo_calculado')::numeric,
                                          'saldo_medido', v_med, 'diferenca', v_dif, 'alerta', abs(v_dif) > regra('tol_regua'));
   end loop;
   perform registrar_fotos('fechamento', v_dia::text, p_fotos, v_frent);
   perform auditar('fechamento.registrado', 'fechamento', v_dia::text,
                   jsonb_build_object('medidos', p_medidos, 'frentista_id', v_frent, 'frentista', (select nome from frentistas where id = v_frent),
-                                     'fotos', coalesce(cardinality(p_fotos), 0)));
+                                     'fotos', coalesce(cardinality(p_fotos), 0), 'atrasado', v_atrasado, 'frentistas_do_dia', to_jsonb(v_quem)));
   return v_res;
 end $$;
 
@@ -1027,6 +1105,7 @@ begin
   if not exists (select 1 from bombas where numero = v_bomba and ativa) then
     raise exception 'Bomba % não existe.', coalesce(v_bomba::text, '(vazia)') using errcode = '22023';
   end if;
+  perform exigir_turno_anterior_fechado();
   v_dh := date_trunc('second', (r ->> 'data_hora')::timestamp);
   perform validar_data_lancamento(v_dh);
   v_visor := (r ->> 'visor')::numeric;
@@ -1342,6 +1421,57 @@ begin
   return jsonb_build_object('id', p_lote, 'situacao', case p_acao when 'confirmar' then 'Confirmado' else 'Desfeito' end, 'registros', v_n);
 end $$;
 
+-- Dia que ficou aberto e não dá para medir (régua quebrada, mais de um dia esquecido): o supervisor fecha pelo painel.
+-- A régua fica igual ao esperado e o dia fica marcado "sem medição"; a diferença real aparece no próximo fechamento medido.
+create or replace function fechar_sem_medicao(p_dia date, p_motivo text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_pend date[] := dias_sem_fechamento(); t jsonb; v_n integer := 0;
+begin
+  perform exigir(array['supervisor']);
+  if length(trim(coalesce(p_motivo, ''))) < 5 then raise exception 'Escreva o motivo para fechar sem medição.' using errcode = '22023'; end if;
+  if not (p_dia = any (v_pend)) then raise exception 'O turno de % não está esperando fechamento.', to_char(p_dia, 'DD/MM') using errcode = '22023'; end if;
+  if p_dia <> v_pend[1] then raise exception 'Feche antes o dia mais antigo (%).', to_char(v_pend[1], 'DD/MM') using errcode = '22023'; end if;
+  for t in select value from jsonb_array_elements(calcular_fechamento(p_dia)) loop
+    insert into fechamentos (tanque, data, saldo_inicial, chegadas, saidas, saldo_calculado, saldo_medido, diferenca, frentista_id, conta,
+                             atrasado, sem_medicao, motivo, alerta_visto_por, alerta_visto_em)
+    values (t ->> 'tanque', p_dia, (t ->> 'saldo_inicial')::numeric, (t ->> 'chegadas')::numeric, (t ->> 'saidas')::numeric,
+            (t ->> 'saldo_calculado')::numeric, round((t ->> 'saldo_calculado')::numeric, 1), 0, null, meu_email(), true, true, left(trim(p_motivo), 500),
+            meu_email(), now());
+    v_n := v_n + 1;
+  end loop;
+  perform auditar('fechamento.sem_medicao', 'fechamento', p_dia::text, jsonb_build_object('motivo', left(trim(p_motivo), 500), 'tanques', v_n));
+  return jsonb_build_object('data', p_dia, 'tanques', v_n);
+end $$;
+
+-- Alertas (sem desconto do motorista; turno fechado com atraso): quem confere toca em Visto
+create or replace function marcar_visto(p_tipo text, p_chave text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform exigir(array['supervisor']);
+  if p_tipo = 'desconto' then
+    update abastecimentos set alerta_visto_por = meu_email(), alerta_visto_em = now() where id = p_chave::bigint and not desconto_confirmado and alerta_visto_em is null;
+  elsif p_tipo = 'fechamento' then
+    update fechamentos set alerta_visto_por = meu_email(), alerta_visto_em = now() where data = p_chave::date and alerta_visto_em is null;
+  else raise exception 'Tipo de alerta inválido.' using errcode = '22023';
+  end if;
+  if not found then raise exception 'Este alerta já foi visto ou não existe.' using errcode = 'P0002'; end if;
+  perform auditar('alerta.visto', p_tipo, p_chave, null);
+end $$;
+
+-- Folha do dia (modelo da Ritmo) para baixar em PDF no painel e no app. O celular recebe o CPF mascarado.
+create or replace function folha_do_dia(p_dia date) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v jsonb;
+begin
+  perform exigir(array['posto', 'supervisor']);
+  v := relatorio_do_dia(p_dia);
+  if meu_papel() = 'posto' then
+    v := jsonb_set(v, '{chegadas}', coalesce((select jsonb_agg(c || jsonb_build_object('cpf', case when c ->> 'cpf' is null then null else '*********' || right(c ->> 'cpf', 2) end))
+                                               from jsonb_array_elements(v -> 'chegadas') c), '[]'));
+  end if;
+  return v || jsonb_build_object('fechado', exists (select 1 from fechamentos where data = p_dia));
+end $$;
+
 -- Exportar › Fechamento do turno: um cartão por dia fechado no app, com o que entrou, o que está pendente,
 -- os fechamentos para o KMM daquele dia e o relatório diário em PDF.
 create or replace function turnos_kmm(p_limite integer default 30) returns jsonb
@@ -1352,6 +1482,8 @@ begin
     select d.dia,
            (select max(f.criado_em) from fechamentos f where f.data = d.dia) as fechado_em,
            (select fr.nome from fechamentos f join frentistas fr on fr.id = f.frentista_id where f.data = d.dia order by f.id desc limit 1) as fechado_por,
+           (select bool_or(f.atrasado) from fechamentos f where f.data = d.dia) as atrasado,
+           (select bool_or(f.sem_medicao) from fechamentos f where f.data = d.dia) as sem_medicao,
            (select count(*) from abastecimentos a where a.data_hora::date = d.dia and a.status <> 'Cancelado') as abastecimentos,
            (select coalesce(sum(a.litros), 0) from abastecimentos a where a.data_hora::date = d.dia and a.status <> 'Cancelado') as litros,
            (select count(*) from abastecimentos a where a.data_hora::date = d.dia and a.status in ('Aguardando autorização', 'Exceção', 'Erro')) as pendentes,
@@ -1673,7 +1805,8 @@ end $$;
 
 grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frentista(bigint, text), sair_frentista(text), informar_versao(text),
   dev_estrutura(), dev_salvar(text, jsonb, jsonb), dev_apagar(text, jsonb), dev_saude(),
-  registrar_abastecimento(text, jsonb, text[]), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[]),
+  registrar_abastecimento(text, jsonb, text[]), registrar_chegada(text, jsonb, text[]), registrar_fechamento(text, jsonb, text[], date),
+  fechar_sem_medicao(date, text), marcar_visto(text, text), folha_do_dia(date), dias_sem_fechamento(),
   registrar_afericao(text, jsonb, text[]),
   cadastrar_veiculo_app(text, text, numeric, integer, text), cadastrar_motorista_app(text, text, text),
   corrigir_veiculo_app(text, text, numeric, integer), definir_preco_diesel(text, numeric, text),
@@ -1689,3 +1822,17 @@ grant execute on function exigir(text[]), sou_gestor(), nivel_papel(text), regra
 -- Só o Apps Script do Google Drive (chave service_role)
 grant execute on function fotos_para_drive(integer), foto_no_drive(text, text, text, boolean), relatorios_para_drive(),
   relatorio_no_drive(date, text, text, timestamptz) to service_role;
+
+-- ---------- Ajuste de regra (sem desconto não espera mais autorização) ----------
+-- Os que estavam esperando autorização só por falta de desconto passam pela conferência e seguem o caminho normal.
+-- Os de fora do horário (regra antiga) continuam esperando a decisão do supervisor. Rodar de novo não muda nada.
+do $$
+declare a abastecimentos; c jsonb;
+begin
+  for a in select * from abastecimentos where status = 'Aguardando autorização' and not fora_horario loop
+    c := conferir_abastecimento(a.data_hora, a.placa, a.motorista, a.km, a.litros, a.encerrante, a.bomba, a.id);
+    update abastecimentos set status = c ->> 'status', problemas = c -> 'problemas', cpf = c ->> 'cpf',
+           encerrante_anterior = (c ->> 'encerrante_anterior')::numeric, tanque = c ->> 'tanque', atualizado_em = now()
+     where id = a.id;
+  end loop;
+end $$;

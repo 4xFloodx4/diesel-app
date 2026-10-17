@@ -238,6 +238,10 @@ textarea { min-height: 70px; resize: vertical; }
 .lista-exp .btn { margin-top: auto; }
 .corpo > .filtros { padding: 0 0 14px; }
 a.lk { color: var(--azul); font-weight: 500; text-decoration: none; }
+.caixa.alertas li { grid-template-columns: 3px minmax(0, 1fr) auto; align-items: center; cursor: default; }
+.caixa.alertas q { color: var(--tinta-2); }
+.aviso-turno { border-color: var(--alerta); }
+.aviso-turno h2 { color: var(--alerta); }
 .bombas-af { gap: 8px 24px; }
 .bombas-af > span { display: inline-flex; align-items: center; gap: 8px; }
 /* Banco de dados do desenvolvedor */

@@ -75,7 +75,8 @@ async function gerar(destino, paginas, alvo) {
   mkdirSync(destino, { recursive: true });
   await build({
     entryPoints: paginas.map(p => join(WEB, p.js)),
-    outdir: destino, outbase: WEB, bundle: true, format: 'esm', minify: true, sourcemap: false,
+    // splitting: o que só é usado às vezes (o gerador de PDF da folha do turno) fica num arquivo à parte e só carrega quando pedido
+    outdir: destino, outbase: WEB, bundle: true, format: 'esm', splitting: true, chunkNames: 'comum/[name]-[hash]', minify: true, sourcemap: false,
     target: ['es2020', 'chrome90'], platform: 'browser', legalComments: 'linked',
     define: {
       __SUPABASE_URL__: JSON.stringify(cfg.url),
