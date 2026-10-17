@@ -520,6 +520,22 @@ test('relatório diário: o Apps Script pega o dia fechado com cabeçalho, abast
   assert.deepEqual([cartao.relatorio.drive_url, cartao.relatorio.atualizado], ['https://drive.google.com/file/d/1RelatorioDriveId/view', true]);
 });
 
+test('regras da conferência: o administrador ajusta e o banco passa a conferir com o valor novo', async () => {
+  const km = Number((await db.query("select greatest(max(km), 0) as k from abastecimentos where placa = 'ABC1D23' and status in ('Pronto', 'Em lote', 'Lançado')")).rows[0].k);
+  const salto = async () => (await db.query("select conferir_abastecimento(agora_local(), 'ABC1D23', 'JOAO DA SILVA', $1, 10, 99999999, 1) as c", [km + 600])).rows[0].c.problemas
+    .some(p => p.startsWith('Salto de KM'));
+  assert.equal(await salto(), false);   // 600 km: dentro dos 3.000 padrão
+  assert.equal((await como(CHEFE, 'update configuracoes set km_salto = 500 where id = 1 returning id')).length, 0);   // supervisor não muda
+  await como(DONO, 'update configuracoes set km_salto = 500, tanque_padrao = 900 where id = 1');
+  assert.equal(await salto(), true);
+  assert.deepEqual((await rpc(POSTO, 'estado_posto')).regras.km_salto, 500);
+  await db.exec("insert into veiculos (placa) values ('XYZ9W88')");
+  assert.equal(Number((await db.query("select capacidade_l from veiculos where placa = 'XYZ9W88'")).rows[0].capacidade_l), 900);
+  await assert.rejects(como(DONO, 'update configuracoes set km_salto = 5 where id = 1'), /check constraint/);
+  await como(DONO, 'update configuracoes set km_salto = 3000, tanque_padrao = 1100 where id = 1');
+  await db.exec("delete from veiculos where placa = 'XYZ9W88'");
+});
+
 test('ninguém apaga abastecimento nem mexe na auditoria', async () => {
   await assert.rejects(db.exec('delete from abastecimentos'), /não pode ser apagado/);
   await assert.rejects(db.exec('delete from auditoria'), /somente inclusão/);

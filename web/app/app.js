@@ -15,7 +15,9 @@ aplicarTema();
 // Conta de supervisor ou administrador usa o painel (versão de celular); no APK ele fica em painel/, no site em ../painel/
 const URL_PAINEL = __ALVO__ === 'android' ? 'painel/index.html' : '../painel/';
 
-const LIM = { kmSalto: 3000, tolCap: 1.05, tolEnc: 1, tolTanque: 20, tolAfericao: 0.1 };   // aferição: 0,5% de 20 L
+// Regras da conferência: as mesmas do banco (o administrador ajusta no painel); estes são os valores padrão até o banco responder
+const LIM = { kmSalto: 3000, tolCap: 1.05, tolEnc: 1, tolTanque: 20, tolAfericao: 0.1 };
+const mL = litros => `${nf(litros * 1000, 0)} mL`;
 const MAX_FOTOS = 6;
 const $ = id => document.getElementById(id);
 const conteudo = $('conteudo');
@@ -48,7 +50,13 @@ const dataHoraCurta = iso => iso ? new Date(iso).toLocaleString('pt-BR', { day: 
 // placa/motorista: o que foi escolhido da lista; placaTxt/motoristaTxt: o que o frentista está digitando
 // capacidade/cpf: só quando a placa ou o motorista ainda não têm isso no cadastro
 // fotos: a foto do comprovante junto com o visor da bomba (obrigatória, uma só; vai para o Google Drive)
-const TANQUE_PADRAO = '1100';   // tanque de caminhão novo já vem com 1100 L (o banco usa o mesmo padrão)
+let TANQUE_PADRAO = '1100';   // tanque de caminhão novo (vem das regras do banco)
+function aplicarRegras(r) {
+  if (!r) return;
+  Object.assign(LIM, { kmSalto: Number(r.km_salto), tolCap: Number(r.tol_capacidade), tolEnc: Number(r.tol_encerrante), tolTanque: Number(r.tol_regua),
+    tolAfericao: Number(r.tol_afericao) });
+  TANQUE_PADRAO = String(Number(r.tanque_padrao)).replace('.', ',');
+}
 const novoForm = () => ({ bomba: estado?.bombas?.length === 1 ? estado.bombas[0].numero : null, placa: '', motorista: '', placaTxt: '', motoristaTxt: '',
   capacidade: TANQUE_PADRAO, cpf: '', fotos: [],
   hora: horaAgora(), km: '', litros: '', enc: '', obs: '', desconto: null, justificativa: '', justHorario: '' });
@@ -174,6 +182,7 @@ async function atualizarEstado() {
   estado = await rpc('estado_posto');
   semAcesso = false; semRede = false;
   if (estado.papel !== 'posto') { location.replace(URL_PAINEL); throw new Error('Abrindo o painel…'); }
+  aplicarRegras(estado.regras);
   gravar('estadoCache', estado);   // na próxima abertura o app já aparece com isto, enquanto busca o atual
 }
 
@@ -563,7 +572,7 @@ function blocoCaminhaoDiesel(f) {
     <div class="field"><label class="lbl" for="c-motorista">Motorista</label><input id="c-motorista" class="busca" maxlength="120" autocapitalize="characters" ${SEM_TECLADO_ESPERTO} value="${esc(f.motorista)}"></div>`;
 }
 
-// Últimas aferições, com quem fez (acima de 100 mL fica vermelho)
+// Últimas aferições, com quem fez (acima da tolerância fica vermelho)
 function historicoAfericoes() {
   const lista = estado.afericoes_recentes || [];
   if (!lista.length) return '<div class="secao">Últimas aferições</div><p class="hint">Nenhuma aferição registrada ainda.</p>';
@@ -592,7 +601,7 @@ function telaAfericao() {
       <input id="a-visor" class="num" inputmode="decimal" value="${esc(f.visor)}"></div>
     ${v > 0 ? `<ul class="checks"><li class="${v < 15 || v > 25 ? 'falha' : Math.abs(dif) <= LIM.tolAfericao ? 'ok' : 'falha'}">${v < 15 || v > 25
       ? 'Confira o número: deve ficar perto de 20 L.' : Math.abs(dif) <= LIM.tolAfericao
-      ? `Diferença de ${ml(dif)}: dentro da tolerância (até 100 mL).` : `Diferença de ${ml(dif)}: acima da tolerância. O supervisor vai receber um alerta.`}</li></ul>` : ''}
+      ? `Diferença de ${ml(dif)}: dentro da tolerância (até ${mL(LIM.tolAfericao)}).` : `Diferença de ${ml(dif)}: acima da tolerância. O supervisor vai receber um alerta.`}</li></ul>` : ''}
     ${fotosAfericao.length ? '' : '<p class="hint">Tire a foto da medida cheia junto com o visor da bomba.</p>'}
     ${blocoFotos(fotosAfericao, 'afericao', 1, 3)}
     ${botaoEnviar('aferir', 'Registrar aferição', pode)}
@@ -1046,7 +1055,7 @@ async function carregar() {
   // Abre na hora com o último estado guardado neste celular; o do banco chega logo depois e a tela se atualiza
   const guardado = conta && !estado ? ler('estadoCache', null) : null;
   if (guardado?.conta === conta && guardado.papel === 'posto') {
-    estado = guardado;
+    estado = guardado; aplicarRegras(estado.regras);
     form ||= formularioInicial(); chegada ||= novaChegada();
     render();
   }

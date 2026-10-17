@@ -105,8 +105,11 @@ async function iniciarAgora() {
   est.papel = papel; est.conta = conta;
   const eu = await chamar(() => consulta(supabase.from('acessos').select('nome').eq('email', conta).maybeSingle()));
   est.nome = eu?.nome || conta;
-  const cfg = await chamar(() => consulta(supabase.from('configuracoes').select('abertura, fechamento').eq('id', 1).maybeSingle()));
-  if (cfg) est.turno = { abertura: String(cfg.abertura).slice(0, 5), fechamento: String(cfg.fechamento).slice(0, 5) };
+  const cfg = await chamar(() => consulta(supabase.from('configuracoes').select('*').eq('id', 1).maybeSingle()));
+  if (cfg?.abertura) {
+    est.turno = { abertura: String(cfg.abertura).slice(0, 5), fechamento: String(cfg.fechamento).slice(0, 5) };
+    est.regras = cfg; TOL_AFERICAO = Number(cfg.tol_afericao); TOL_REGUA = Number(cfg.tol_regua);
+  }
   $('app').classList.remove('sem-menu');
   if (!MENU.some(([, itens]) => itens.some(i => i[0] === est.tela && podeVer(i)))) est.tela = 'resumo';
   montarMenu();
@@ -131,7 +134,7 @@ const MENU = [
   ['Operação', [['resumo', 'Visão do dia', 'grade'], ['decisoes', 'Decisões', 'lista'], ['abastecimentos', 'Abastecimentos', 'doc'], ['tanques', 'Tanques e fechamentos', 'gota']]],
   ['Exportar', [['turnos', 'Fechamento do turno', 'kmm'], ['relatorios', 'Relatório diário', 'doc'], ['consultas', 'Consultas', 'baixar']]],
   ['Cadastros', [['frentistas', 'Frentistas', 'pessoa'], ['veiculos', 'Veículos e motoristas', 'caminhao'], ['caminhoes', 'Caminhões de diesel', 'caminhao']]],
-  ['Sistema', [['acessos', 'Acessos', 'cadeado', 'admin'], ['auditoria', 'Histórico', 'historico'], ['turno', 'Horário do turno', 'turno', 'admin']]],
+  ['Sistema', [['acessos', 'Acessos', 'cadeado', 'admin'], ['auditoria', 'Histórico', 'historico'], ['turno', 'Horário e regras', 'turno', 'admin']]],
   ['Ajuda', [['guia', 'Guia de uso', 'ajuda']]],
 ];
 const TITULO = Object.fromEntries(MENU.flatMap(([, itens]) => itens.map(i => [i[0], i[1]])));
@@ -194,7 +197,7 @@ function tanqueHtml(t) {
   const ticks = [25, 50, 75].map(p => `<i data-css="bottom:${p}%"></i>`).join('');
   const linhaMed = med === null ? '' : `<div class="medido" data-css="bottom:${Math.max(0, Math.min(100, med / cap * 100))}%"></div>`;
   const chip = med === null ? '<span class="chip neutro">Aguardando medição da régua</span>'
-    : `<span class="chip ${Math.abs(dif) > 20 ? 'alerta' : 'ok'}">Régua ${nf(med, 0)} L · diferença ${dif > 0 ? '+' : ''}${nf(dif, 0)} L</span>`;
+    : `<span class="chip ${Math.abs(dif) > TOL_REGUA ? 'alerta' : 'ok'}">Régua ${nf(med, 0)} L · diferença ${dif > 0 ? '+' : ''}${nf(dif, 0)} L</span>`;
   return `<div class="tanque">
     <div class="cilindro" role="img" aria-label="${esc(t.tanque)} com ${nf(calc, 0)} litros esperados de ${nf(cap, 0)} (${pct}%)">${ticks}<div class="nivel" data-css="height:${pct}%"></div>${linhaMed}</div>
     <dl><div class="nome"><b>${esc(t.tanque)}</b><span>${pct}%</span></div>
@@ -519,7 +522,7 @@ async function contarFotos(entidade) {
 }
 
 // ---------- Aferição das bombas (semanal) ----------
-const TOL_AFERICAO = 0.1;   // 0,5% da medida de 20 L
+let TOL_AFERICAO = 0.1, TOL_REGUA = 20;   // regras da conferência (lidas do banco ao entrar; o administrador ajusta em Horário e regras)
 const ultimaAfericao = (af, numero) => af.find(a => a.bomba === numero);   // af vem do mais novo para o mais antigo
 function chipAfericao(a) {
   if (!a) return '<span class="chip alerta">nunca feita</span>';
@@ -554,9 +557,9 @@ TELAS.tanques = async () => {
   return `${cabeca('Tanques e fechamentos', 'Saldo de hoje, medições da régua, chegadas de diesel e o cadastro de tanques e bombas.')}
     <section class="painel"><header><h2>Hoje</h2><span>a linha tracejada é a medição da régua no fechamento</span></header>
       <div class="corpo">${r.hoje.length ? `<div class="tanques">${r.hoje.map(tanqueHtml).join('')}</div>` : '<p class="hint">Nenhum tanque cadastrado.</p>'}</div></section>
-    <section class="painel"><header><h2>Fechamentos</h2><span>diferença acima de 20 L fica destacada</span></header>
+    <section class="painel"><header><h2>Fechamentos</h2><span>diferença acima de ${nf(TOL_REGUA, 0)} L fica destacada</span></header>
       ${r.fs.length ? `<div class="tabela"><table><thead><tr><th>Data</th><th>Tanque</th><th class="n">Inicial</th><th class="n">+ Chegadas</th><th class="n">− Saídas</th><th class="n">Esperado</th><th class="n">Régua</th><th class="n">Diferença</th><th>Fechado por</th><th></th></tr></thead><tbody>
-      ${r.fs.map(f => `<tr class="${Math.abs(f.diferenca) > 20 ? 'divergente' : ''}"><td>${dataBR(f.data)}</td><td>${esc(f.tanque)}</td><td class="n">${nf(f.saldo_inicial, 0)}</td>
+      ${r.fs.map(f => `<tr class="${Math.abs(f.diferenca) > TOL_REGUA ? 'divergente' : ''}"><td>${dataBR(f.data)}</td><td>${esc(f.tanque)}</td><td class="n">${nf(f.saldo_inicial, 0)}</td>
         <td class="n">${nf(f.chegadas, 0)}</td><td class="n">${nf(f.saidas, 0)}</td><td class="n">${nf(f.saldo_calculado, 0)}</td><td class="n">${nf(f.saldo_medido, 0)}</td>
         <td class="n">${Number(f.diferenca) > 0 ? '+' : ''}${nf(f.diferenca, 0)}</td><td>${esc(f.frentistas?.nome || '')}</td><td>${botaoFotos('fechamento', f.data, `Fechamento de ${dataBR(f.data)}`, r.ff[f.data])}</td></tr>`).join('')}
       </tbody></table></div>` : '<p class="vazio">Nenhum fechamento ainda.</p>'}
@@ -571,7 +574,7 @@ TELAS.tanques = async () => {
         <td>${esc([x.placa_caminhao, x.placa_carreta].filter(Boolean).join(' / '))}<span class="sub">${esc(x.motorista || '')}</span></td><td>${esc(x.frentistas?.nome || '')}</td>
         <td class="quebra">${esc(x.alerta || '')}</td><td>${botaoFotos('chegada', x.id, `Chegada NF ${x.nf}`, r.fc[String(x.id)])}</td></tr>`).join('')}
       </tbody></table></div>` : '<p class="vazio">Nenhuma chegada ainda.</p>'}</section>
-    <section class="painel"><header><h2>Aferições</h2><span>1 vez por semana em cada bomba · medida de 20 L · diferença acima de 100 mL fica destacada</span></header>
+    <section class="painel"><header><h2>Aferições</h2><span>1 vez por semana em cada bomba · medida de 20 L · diferença acima de ${nf(TOL_AFERICAO * 1000, 0)} mL fica destacada</span></header>
       ${r.af.length ? `<div class="tabela"><table><thead><tr><th>Data</th><th class="n">Bomba</th><th class="n">Medida</th><th class="n">Visor</th><th class="n">Diferença</th><th>Aferido por</th><th></th></tr></thead><tbody>
       ${r.af.map(a => `<tr class="${Math.abs(a.diferenca_l) > TOL_AFERICAO ? 'divergente' : ''}"><td>${dataHora(a.data_hora)}</td><td class="n">${esc(a.bomba)}</td>
         <td class="n">${nf(a.medida_l, 3)} L</td><td class="n">${nf(a.visor_l, 3)} L</td><td class="n">${mL(a.diferenca_l)}</td><td>${esc(a.frentistas?.nome || '')}</td>
@@ -935,14 +938,33 @@ TELAS.guia = async () => `${cabeca('Guia de uso', 'Como usar o app e o painel, e
 TELAS.turno = async () => {
   if (!souAdmin()) return TELAS.resumo();
   const t = est.turno;
-  return `${cabeca('Horário do turno', 'Fora deste horário, o lançamento só entra com justificativa e autorização de um supervisor ou administrador.')}
+  return `${cabeca('Horário e regras', 'O horário do turno e as regras que a conferência usa no app e no banco.')}
     <section class="painel estreito-560"><header><h2>Turno do posto</h2><span>vale para todos os celulares</span></header><div class="corpo">
       <form class="formulario" data-turno>
         ${campo('Abertura', 'abertura', `type="time" required value="${esc(t.abertura)}"`)}
         ${campo('Fechamento', 'fechamento', `type="time" required value="${esc(t.fechamento)}"`)}
         <button class="btn small" type="submit">Salvar horário</button></form>
-      <p class="hint">Depois que o turno do dia é fechado no app, nada mais entra com a data daquele dia. A mudança fica na auditoria.</p></div></section>`;
+      <p class="hint">Depois que o turno do dia é fechado no app, nada mais entra com a data daquele dia. A mudança fica na auditoria.</p></div></section>
+    ${blocoRegras()}`;
 };
+
+// Regras da conferência: o app e o banco usam os mesmos valores; a mudança vale na hora para os próximos lançamentos
+function blocoRegras() {
+  const g = est.regras || {};
+  const num = (rot, nome, valor, extra, dica) => `${campo(rot, nome, `class="num" inputmode="decimal" required value="${esc(valor)}" ${extra}`)}`;
+  return `<section class="painel estreito-560"><header><h2>Regras da conferência</h2><span>valem para o app e para o banco</span></header><div class="corpo">
+      <form class="formulario" data-regras>
+        ${num('Salto de KM suspeito (km)', 'km_salto', g.km_salto ?? 3000)}
+        ${num('Folga do encerrante (L)', 'tol_encerrante', nf(g.tol_encerrante ?? 1, 2))}
+        ${num('Folga da capacidade do tanque (%)', 'tol_capacidade', nf(((g.tol_capacidade ?? 1.05) - 1) * 100, 1))}
+        ${num('Diferença da régua aceita (L)', 'tol_regua', nf(g.tol_regua ?? 20, 1))}
+        ${num('Tolerância da aferição (mL)', 'tol_afericao', nf((g.tol_afericao ?? 0.1) * 1000, 0))}
+        ${num('Tanque padrão do caminhão novo (L)', 'tanque_padrao', nf(g.tanque_padrao ?? 1100, 0))}
+        <button class="btn small" type="submit">Salvar regras</button></form>
+      <p class="hint">Salto de KM: rodou mais que isso desde o último abastecimento, vai para conferência. Folga do encerrante: quanto os litros do visor podem
+        diferir do encerrante. Folga da capacidade: quanto acima do tanque do caminhão ainda é aceito. Régua: diferença aceita no fechamento e na chegada.
+        A mudança fica na auditoria e vale para os próximos lançamentos.</p></div></section>`;
+}
 
 // ---------- Ações: formulários ----------
 trabalho.addEventListener('submit', async e => {
@@ -961,6 +983,16 @@ trabalho.addEventListener('submit', async e => {
     return;
   }
   if (f.hasAttribute('data-filtros')) { est.filtros = { de: d.de, ate: d.ate, status: d.status, placa: d.placa.trim() }; return abrir('abastecimentos'); }
+  if (f.hasAttribute('data-regras')) {
+    const v = k => parseNum(d[k]);
+    const regras = { km_salto: Math.round(v('km_salto')), tol_encerrante: v('tol_encerrante'), tol_capacidade: Math.round((1 + v('tol_capacidade') / 100) * 100) / 100,
+      tol_regua: v('tol_regua'), tol_afericao: v('tol_afericao') / 1000, tanque_padrao: v('tanque_padrao') };
+    if (Object.values(regras).some(x => Number.isNaN(x))) { avisar('Confira os números das regras.', 'warn'); return; }
+    const r = await agir(() => consulta(supabase.from('configuracoes').update({ ...regras, atualizado_em: new Date().toISOString() }).eq('id', 1).select()));
+    if (r?.length) { est.regras = r[0]; TOL_AFERICAO = Number(r[0].tol_afericao); TOL_REGUA = Number(r[0].tol_regua); avisar('Regras salvas. Valem para os próximos lançamentos.'); }
+    else if (r) avisar('Só o administrador altera as regras.', 'warn');
+    return;
+  }
   if (f.hasAttribute('data-turno')) {
     if (d.abertura === d.fechamento) { avisar('Abertura e fechamento não podem ser iguais.', 'warn'); return; }
     const r = await agir(() => consulta(supabase.from('configuracoes').update({ abertura: d.abertura, fechamento: d.fechamento, atualizado_em: new Date().toISOString() }).eq('id', 1).select()));

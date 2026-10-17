@@ -13,6 +13,9 @@ const CAMPOS = {
   fora_horario: 'Fora do horário', justificativa_horario: 'Justificativa (horário)', cpf_final: 'CPF (final)', desconto: 'Desconto do motorista',
   medidos: 'Medidas da régua', fotos: 'Fotos', nf: 'Nota fiscal', mensagem: 'Mensagem', registros: 'Registros', quantidade: 'Quantidade',
   tentativa: 'Tentativa', no_dia: 'Erros no dia', caminho: 'Arquivo', enviada_em: 'Enviada em', enviada_por: 'Enviada por',
+  km_salto: 'Salto de KM suspeito', tol_encerrante: 'Folga do encerrante (L)', tol_capacidade: 'Folga da capacidade do tanque',
+  tol_regua: 'Diferença da régua aceita (L)', tol_afericao: 'Tolerância da aferição (L)', tanque_padrao: 'Tanque padrão (L)',
+  placa_cavalo: 'Placa do cavalo', placa_carreta: 'Placa da carreta', atualizado_em: 'Atualizado em',
 };
 const IGNORAR = new Set(['atualizado_em', 'criado_em', 'id', 'alterado_em']);
 const PAPEL = { posto: 'Celular do posto', supervisor: 'Supervisor', administrador: 'Administrador', desenvolvedor: 'Desenvolvedor' };
@@ -129,7 +132,7 @@ export function descrever(e, ctx = {}) {
           veiculos: `o veículo ${placa(reg.placa || e.entidade_id)}`, motoristas: `o motorista <b>${esc(reg.nome)}</b>`,
           veiculo_motoristas: `o motorista <b>${esc(reg.motorista || '')}</b> na placa ${placa(reg.placa || e.entidade_id)}`,
           frentistas: `o frentista <b>${esc(reg.nome)}</b>`, tanques: `o tanque <b>${esc(reg.codigo)}</b>`, bombas: `a bomba <b>${esc(reg.numero)}</b>`,
-          acessos: `o acesso de <b>${esc(reg.nome)}</b> (${esc(reg.email)})`, configuracoes: 'o horário do turno',
+          acessos: `o acesso de <b>${esc(reg.nome)}</b> (${esc(reg.email)})`, configuracoes: 'o horário e as regras da conferência',
           caminhoes_diesel: `o caminhão de diesel ${placa(reg.placa_cavalo || e.entidade_id)}`,
         }[tabela] || `${esc(tabela)} ${id}`;
         tipo = tabela === 'acessos' ? 'acesso' : 'cadastro';

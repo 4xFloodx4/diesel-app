@@ -120,6 +120,19 @@ create table if not exists configuracoes (
   check (abertura <> fechamento)
 );
 insert into configuracoes (id) values (1) on conflict (id) do nothing;
+-- Regras da conferência (o administrador ajusta no painel, em Horário e regras). O app e o banco usam os mesmos valores.
+alter table configuracoes add column if not exists km_salto integer not null default 3000 check (km_salto between 100 and 100000);
+alter table configuracoes add column if not exists tol_encerrante numeric(6, 2) not null default 1 check (tol_encerrante between 0 and 50);
+alter table configuracoes add column if not exists tol_capacidade numeric(4, 2) not null default 1.05 check (tol_capacidade between 1 and 2);
+alter table configuracoes add column if not exists tol_regua numeric(8, 1) not null default 20 check (tol_regua between 0 and 5000);
+alter table configuracoes add column if not exists tol_afericao numeric(6, 3) not null default 0.1 check (tol_afericao between 0 and 5);
+alter table configuracoes add column if not exists tanque_padrao numeric(8, 1) not null default 1100 check (tanque_padrao > 0 and tanque_padrao < 5000);
+
+-- Valor de uma regra da conferência (ex.: regra('km_salto'))
+create or replace function regra(p_nome text) returns numeric
+language sql stable security definer set search_path = public as $$
+  select (to_jsonb(c) ->> p_nome)::numeric from configuracoes c where c.id = 1
+$$;
 
 -- Fora do turno: antes da abertura ou a partir do fechamento (aceita turno que vira a meia-noite)
 create or replace function fora_do_turno(p_dh timestamp) returns boolean
@@ -166,9 +179,10 @@ alter table veiculos add column if not exists criado_por text;
 alter table veiculos add column if not exists criado_em timestamptz default now();
 -- Placa importada da planilha (só placa + motorista) entra sem capacidade: o frentista informa no primeiro abastecimento
 alter table veiculos alter column capacidade_l drop not null;
--- Tanque do caminhão: 1100 L por padrão (placa nova, da planilha, do painel ou do app). Se for diferente, o frentista corrige no app.
-alter table veiculos alter column capacidade_l set default 1100;
-update veiculos set capacidade_l = 1100 where capacidade_l is null;
+-- Tanque do caminhão: o tanque padrão das regras (1100 L, se ninguém mudou) para placa nova, da planilha, do painel ou do
+-- app. Se for diferente, o frentista corrige no app. Quem preenche é o gatilho normalizar_cadastro.
+alter table veiculos alter column capacidade_l drop default;
+update veiculos set capacidade_l = (select tanque_padrao from configuracoes where id = 1) where capacidade_l is null;
 -- KM corrigido (pelo frentista no app ou no painel): vira o novo ponto de partida. A conferência de KM ignora os
 -- abastecimentos anteriores a este momento (ex.: painel do caminhão trocado, ou um KM digitado errado antes).
 alter table veiculos add column if not exists km_desde timestamp;
@@ -229,6 +243,9 @@ language plpgsql as $$
 begin
   if tg_table_name in ('veiculos', 'veiculo_motoristas') then
     new.placa := normaliza_placa(new.placa);
+    if tg_table_name = 'veiculos' and tg_op = 'INSERT' then   -- if separado: veiculo_motoristas não tem capacidade_l
+      if new.capacidade_l is null then new.capacidade_l := (select tanque_padrao from configuracoes where id = 1); end if;
+    end if;
     if tg_table_name = 'veiculos' and tg_op = 'UPDATE' then   -- if separado: veiculo_motoristas não tem km_inicial
       if new.km_inicial is distinct from old.km_inicial then new.km_desde := agora_local(); end if;   -- KM mudou: conta daqui para frente
     end if;
@@ -642,12 +659,12 @@ begin
       p := p || format('KM %s não é maior que o último KM da placa (%s).', fmt(p_km), fmt(v_km_ant));
     elsif v_veic.km_inicial is not null and p_km < v_veic.km_inicial then
       p := p || format('KM %s é menor que o KM do cadastro da placa (%s).', fmt(p_km), fmt(v_veic.km_inicial));
-    elsif p_km - greatest(v_km_ant, v_veic.km_inicial) > 3000 then
+    elsif p_km - greatest(v_km_ant, v_veic.km_inicial) > regra('km_salto') then
       p := p || format('Salto de KM suspeito: %s km desde o último abastecimento.', fmt(p_km - greatest(v_km_ant, v_veic.km_inicial)));
     end if;
     if v_veic.capacidade_l is null then
       p := p || format('Placa %s sem o tamanho do tanque no cadastro.', v_placa);
-    elsif p_litros > v_veic.capacidade_l * 1.05 then
+    elsif p_litros > v_veic.capacidade_l * regra('tol_capacidade') then
       p := p || format('%s L acima da capacidade do tanque (%s L).', fmt(p_litros), fmt(v_veic.capacidade_l));
     end if;
   end if;
@@ -659,15 +676,15 @@ begin
     v_enc_ant := encerrante_ate(p_bomba, p_data_hora, p_excluir);
     if p_encerrante <= v_enc_ant then
       p := p || format('Encerrante %s não é maior que o anterior da bomba %s (%s).', fmt(p_encerrante), p_bomba, fmt(v_enc_ant));
-    elsif abs(p_encerrante - v_enc_ant - p_litros) > 1 then
+    elsif abs(p_encerrante - v_enc_ant - p_litros) > regra('tol_encerrante') then
       p := p || format('Encerrante indica %s L (de %s para %s), mas foram informados %s L.',
                        fmt(p_encerrante - v_enc_ant), fmt(v_enc_ant), fmt(p_encerrante), fmt(p_litros));
     end if;
     -- Posto com mais de uma bomba: se o encerrante bate com outra bomba, o frentista provavelmente escolheu a errada
-    if p_encerrante <= v_enc_ant or abs(p_encerrante - v_enc_ant - p_litros) > 1 then
+    if p_encerrante <= v_enc_ant or abs(p_encerrante - v_enc_ant - p_litros) > regra('tol_encerrante') then
       select o.numero into v_outra from bombas o
        where o.ativa and o.numero <> p_bomba
-         and abs(p_encerrante - p_litros - encerrante_ate(o.numero, p_data_hora, p_excluir)) <= 1
+         and abs(p_encerrante - p_litros - encerrante_ate(o.numero, p_data_hora, p_excluir)) <= regra('tol_encerrante')
        order by o.numero limit 1;
       if v_outra is not null then
         p := p || format('O encerrante bate com a bomba %s. Confira se a bomba escolhida está certa.', v_outra);
@@ -775,6 +792,8 @@ begin
     'tanques', calcular_fechamento(v_hoje),
     'turno', (select jsonb_build_object('abertura', to_char(abertura, 'HH24:MI'), 'fechamento', to_char(fechamento, 'HH24:MI'))
                 from configuracoes where id = 1),
+    'regras', (select jsonb_build_object('km_salto', km_salto, 'tol_encerrante', tol_encerrante, 'tol_capacidade', tol_capacidade,
+                 'tol_regua', tol_regua, 'tol_afericao', tol_afericao, 'tanque_padrao', tanque_padrao) from configuracoes where id = 1),
     'preco_diesel', (select jsonb_build_object('preco', p.preco, 'em', p.criado_em, 'por', f.nome, 'origem', p.origem)
                        from precos_diesel p left join frentistas f on f.id = p.frentista_id order by p.id desc limit 1),
     -- histórico das aferições na aba Aferir, com quem fez
@@ -932,7 +951,7 @@ begin
   v_car := coalesce(v_car, v_cam.placa_carreta); v_mot := coalesce(v_mot, v_cam.motorista); v_cpf := coalesce(v_cpf, v_cam.cpf);
   if r ->> 'regua_antes' is not null and r ->> 'regua_depois' is not null then
     v_sub := (r ->> 'regua_depois')::numeric - (r ->> 'regua_antes')::numeric;
-    if abs(v_sub - v_lt) > 20 then v_alerta := format('NF diz %s L, mas a régua subiu %s L.', fmt(v_lt), fmt(v_sub)); end if;
+    if abs(v_sub - v_lt) > regra('tol_regua') then v_alerta := format('NF diz %s L, mas a régua subiu %s L.', fmt(v_lt), fmt(v_sub)); end if;
   end if;
   insert into chegadas (uuid, tanque, data_hora, nf, litros, valor_total, regua_antes, regua_depois, placa_caminhao,
                         placa_carreta, motorista, cpf, alerta, frentista_id, conta)
@@ -981,7 +1000,7 @@ begin
     values (t ->> 'tanque', v_dia, (t ->> 'saldo_inicial')::numeric, (t ->> 'chegadas')::numeric, (t ->> 'saidas')::numeric,
             (t ->> 'saldo_calculado')::numeric, v_med, v_dif, v_frent, meu_email());
     v_res := v_res || jsonb_build_object('tanque', t ->> 'tanque', 'saldo_calculado', (t ->> 'saldo_calculado')::numeric,
-                                         'saldo_medido', v_med, 'diferenca', v_dif, 'alerta', abs(v_dif) > 20);
+                                         'saldo_medido', v_med, 'diferenca', v_dif, 'alerta', abs(v_dif) > regra('tol_regua'));
   end loop;
   perform registrar_fotos('fechamento', v_dia::text, p_fotos, v_frent);
   perform auditar('fechamento.registrado', 'fechamento', v_dia::text,
@@ -1003,7 +1022,7 @@ begin
   perform trava_lancamento(v_bomba, null);   -- o encerrante da bomba anda: espera quem está lançando nela
   select * into v_ex from afericoes where uuid = (r ->> 'uuid')::uuid;
   if v_ex.id is not null then
-    return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'diferenca', v_ex.diferenca_l, 'alerta', abs(v_ex.diferenca_l) > 0.1);
+    return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'diferenca', v_ex.diferenca_l, 'alerta', abs(v_ex.diferenca_l) > regra('tol_afericao'));
   end if;
   if not exists (select 1 from bombas where numero = v_bomba and ativa) then
     raise exception 'Bomba % não existe.', coalesce(v_bomba::text, '(vazia)') using errcode = '22023';
@@ -1024,14 +1043,14 @@ begin
   returning id into v_id;
   if v_id is null then   -- mesmo envio gravado ao mesmo tempo por outra conexão
     select * into v_ex from afericoes where uuid = (r ->> 'uuid')::uuid;
-    return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'diferenca', v_ex.diferenca_l, 'alerta', abs(v_ex.diferenca_l) > 0.1);
+    return jsonb_build_object('uuid', v_ex.uuid, 'id', v_ex.id, 'diferenca', v_ex.diferenca_l, 'alerta', abs(v_ex.diferenca_l) > regra('tol_afericao'));
   end if;
   v_dif := v_visor - 20;
   perform registrar_fotos('afericao', v_id::text, p_fotos, v_frent);
   perform auditar('afericao.registrada', 'afericao', v_id::text,
                   jsonb_build_object('bomba', v_bomba, 'visor', v_visor, 'diferenca', v_dif, 'fotos', cardinality(p_fotos),
                                      'frentista', (select nome from frentistas where id = v_frent)));
-  return jsonb_build_object('uuid', r ->> 'uuid', 'id', v_id, 'diferenca', v_dif, 'alerta', abs(v_dif) > 0.1);
+  return jsonb_build_object('uuid', r ->> 'uuid', 'id', v_id, 'diferenca', v_dif, 'alerta', abs(v_dif) > regra('tol_afericao'));
 end $$;
 
 -- O frentista cadastra veículo ou motorista que ainda não existe. Depois, só o supervisor edita.
@@ -1542,7 +1561,7 @@ grant execute on function meu_email(), meu_papel(), estado_posto(), entrar_frent
   gerar_lote(date), linhas_lote(bigint), fechar_lote(bigint, text), reabrir_turno(date, text), turnos_kmm(integer), calcular_fechamento(date), fotos_de(text, text), anexar_foto_veiculo(text, text), excluir_foto(text)
   to authenticated;
 -- As políticas RLS, as do Storage e os gatilhos chamam estas; precisam estar liberadas para quem está logado
-grant execute on function exigir(text[]), sou_gestor(), nivel_papel(text), fora_do_turno(timestamp), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text),
+grant execute on function exigir(text[]), sou_gestor(), nivel_papel(text), regra(text), fora_do_turno(timestamp), agora_local(), hoje(), normaliza_placa(text), normaliza_nome(text),
   placa_valida(text), cpf_valido(text), fmt(numeric), foto_valida(text, text), normalizar_cadastro(), auditar_cadastro(),
   bloquear_alteracao(), proteger_acessos(), proteger_foto()
   to authenticated;
